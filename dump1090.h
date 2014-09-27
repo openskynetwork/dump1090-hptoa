@@ -124,6 +124,10 @@
 #define MODES_OS_LONG_MSG_SIZE     (MODES_LONG_MSG_SAMPLES  * sizeof(uint16_t))
 #define MODES_OS_SHORT_MSG_SIZE    (MODES_SHORT_MSG_SAMPLES * sizeof(uint16_t))
 
+#define MODES_FREQ_HOP_BINS 11
+#define MODES_FREQ_HOP_BIN_SIZE 500000
+#define MODES_FREQ_HOP_BIN_CENTER(x) (Modes.freq + ((x) - (MODES_FREQ_HOP_BINS-1)/2) * MODES_FREQ_HOP_BIN_SIZE)
+
 #define MODES_RAWOUT_BUF_SIZE   (1500)
 #define MODES_RAWOUT_BUF_FLUSH  (MODES_RAWOUT_BUF_SIZE - 200)
 #define MODES_RAWOUT_BUF_RATE   (1000)            // 1000 * 64mS = 1 Min approx
@@ -170,7 +174,7 @@
 
 #define MODES_INTERACTIVE_REFRESH_TIME 250      // Milliseconds
 #define MODES_INTERACTIVE_ROWS          22      // Rows on screen
-#define MODES_INTERACTIVE_DELETE_TTL   300      // Delete from the list after 300 seconds
+#define MODES_INTERACTIVE_DELETE_TTL  3600      // Delete from the list after 300 seconds
 #define MODES_INTERACTIVE_DISPLAY_TTL   60      // Delete from display after 60 seconds
 
 #define MODES_NET_HEARTBEAT_RATE       900      // Each block is approx 65mS - default is > 1 min
@@ -205,6 +209,8 @@ struct client {
 
 // Structure used to describe an aircraft in iteractive mode
 struct aircraft {
+    int heard_on_freq[MODES_FREQ_HOP_BINS];
+
     uint32_t      addr;           // ICAO address
     char          flight[16];     // Flight number
     unsigned char signalLevel[8]; // Last 8 Signal Amplitudes
@@ -253,6 +259,7 @@ struct {                             // Internal state
     pthread_cond_t  data_cond;       // Conditional variable associated
     uint16_t       *pData          [MODES_ASYNC_BUF_NUMBER]; // Raw IQ sample buffers from RTL
     struct timeb    stSystemTimeRTL[MODES_ASYNC_BUF_NUMBER]; // System time when RTL passed us this block
+    int             blkFreqBinRTL[MODES_ASYNC_BUF_NUMBER];
     int             iDataIn;         // Fifo input pointer
     int             iDataOut;        // Fifo output pointer
     int             iDataReady;      // Fifo content count
@@ -264,6 +271,7 @@ struct {                             // Internal state
     uint16_t       *magnitude;       // Magnitude vector
     uint64_t        timestampBlk;    // Timestamp of the start of the current block
     struct timeb    stSystemTimeBlk; // System time when RTL passed us currently processing this block
+    int             blkFreqBin;
     int             fd;              // --ifile option file descriptor
     uint32_t       *icao_cache;      // Recently seen ICAO addresses cache
     uint16_t       *maglut;          // I/Q -> Magnitude lookup table
@@ -276,6 +284,7 @@ struct {                             // Internal state
     int           enable_agc;
     rtlsdr_dev_t *dev;
     int           freq;
+    int           freq_bin;
     int           ppm_error;
 
     // Networking
@@ -298,6 +307,7 @@ struct {                             // Internal state
     // Configuration
     char *filename;                  // Input form file, --ifile option
     int   oversample;
+    int   freq_hop;
     int   phase_enhance;             // Enable phase enhancement if true
     int   nfix_crc;                  // Number of crc bit error(s) to correct
     int   check_crc;                 // Only display messages with good CRC
@@ -358,6 +368,7 @@ struct {                             // Internal state
     unsigned int stat_demodulated3;
     unsigned int stat_goodcrc;
     unsigned int stat_goodcrc_phase[MODES_MAX_PHASE_STATS];
+    unsigned int stat_goodcrc_freq[MODES_FREQ_HOP_BINS];
     unsigned int stat_badcrc;
     unsigned int stat_fixed;
 
@@ -387,6 +398,7 @@ struct {                             // Internal state
 
     unsigned int stat_blocks_processed;
     unsigned int stat_blocks_dropped;
+
 } Modes;
 
 // The struct we use to store information about a decoded message.
@@ -404,6 +416,7 @@ struct modesMessage {
     uint64_t      timestampMsg;                   // Timestamp of the message
     int           remote;                         // If set this message is from a remote station
     unsigned char signalLevel;                    // Signal Amplitude
+    int           freq_bin;
 
     // DF 11
     int  ca;                    // Responder capabilities

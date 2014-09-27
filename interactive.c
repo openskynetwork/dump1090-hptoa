@@ -288,6 +288,9 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
         }
     }
 
+    if (mm->freq_bin != -1)
+        a->heard_on_freq[mm->freq_bin]++;
+
     a->signalLevel[a->messages & 7] = mm->signalLevel;// replace the 8th oldest signal strength
     a->seen      = time(NULL);
     a->timestamp = mm->timestampMsg;

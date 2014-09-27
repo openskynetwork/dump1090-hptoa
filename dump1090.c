@@ -68,6 +68,7 @@ void modesInitConfig(void) {
     // Now initialise things that should not be 0/NULL to their defaults
     Modes.gain                    = MODES_MAX_GAIN;
     Modes.freq                    = MODES_DEFAULT_FREQ;
+    Modes.freq_bin                = (MODES_FREQ_HOP_BINS-1) / 2;
     Modes.ppm_error               = MODES_DEFAULT_PPM;
     Modes.check_crc               = 1;
     Modes.net_heartbeat_rate      = MODES_NET_HEARTBEAT_RATE;
@@ -244,7 +245,8 @@ void modesInitRTLSDR(void) {
     }
     rtlsdr_set_freq_correction(Modes.dev, Modes.ppm_error);
     if (Modes.enable_agc) rtlsdr_set_agc_mode(Modes.dev, 1);
-    rtlsdr_set_center_freq(Modes.dev, Modes.freq);
+    fprintf(stderr, "Tuning to %d Hz\n", MODES_FREQ_HOP_BIN_CENTER(Modes.freq_bin));
+    rtlsdr_set_center_freq(Modes.dev, MODES_FREQ_HOP_BIN_CENTER(Modes.freq_bin));
     rtlsdr_set_sample_rate(Modes.dev, Modes.oversample ? MODES_OVERSAMPLE_RATE : MODES_DEFAULT_RATE);
 
     rtlsdr_reset_buffer(Modes.dev);
@@ -263,6 +265,7 @@ void modesInitRTLSDR(void) {
 // A Mutex is used to avoid races with the decoding thread.
 //
 void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
+    static int last_freq_bin = -1;
 
     MODES_NOTUSED(ctx);
 
@@ -273,6 +276,13 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
 
     // Get the system time for this block
     ftime(&Modes.stSystemTimeRTL[Modes.iDataIn]);
+
+    // Note the frequency bin this was for
+    if (Modes.freq_bin == last_freq_bin)
+        Modes.blkFreqBinRTL[Modes.iDataIn] = Modes.freq_bin;
+    else
+        Modes.blkFreqBinRTL[Modes.iDataIn] = -1; // Retuning, this block has a mix of frequencies
+    last_freq_bin = Modes.freq_bin;
 
     if (len > MODES_ASYNC_BUF_SIZE) {len = MODES_ASYNC_BUF_SIZE;}
 
@@ -524,6 +534,7 @@ static void display_stats(void) {
     for (j = 0; j < MODES_MAX_PHASE_STATS; ++j)
         if (Modes.stat_goodcrc_phase[j] > 0)
             printf("   %d with phase offset %d\n",                Modes.stat_goodcrc_phase[j], j);
+
     printf("%d with bad crc\n",                               Modes.stat_badcrc);
     printf("%d errors corrected\n",                           Modes.stat_fixed);
 
@@ -547,6 +558,56 @@ static void display_stats(void) {
     }
 
     printf("%d total usable messages\n",                      Modes.stat_goodcrc + Modes.stat_ph_goodcrc + Modes.stat_fixed + Modes.stat_ph_fixed);
+
+    if (Modes.freq_hop) {
+        struct aircraft *a;
+        int heard_on_freq[MODES_FREQ_HOP_BINS];
+        int count = 0;
+
+        for (j = 0; j < MODES_FREQ_HOP_BINS; ++j)
+            heard_on_freq[j] = 0;
+
+        for (a = Modes.aircrafts; a; a = a->next) {
+            int any = 0;
+            for (j = 0; j < MODES_FREQ_HOP_BINS; ++j) {
+                if (a->heard_on_freq[j]) {
+                    any = 1;
+                    heard_on_freq[j]++;
+                }
+            }
+            if (any)
+                ++count;
+        }
+
+        printf("%d aircraft recently transmitting\n", count);
+
+        printf("                                 ");
+        for (a = Modes.aircrafts; a; a = a->next)
+            printf("%02x", (a->addr>>16) & 255);
+        printf("\n                  ICAO address:  ");
+        for (a = Modes.aircrafts; a; a = a->next)
+            printf("%02x", (a->addr>>8) & 255);
+        printf("\n                                 ");
+        for (a = Modes.aircrafts; a; a = a->next)
+            printf("%02x", a->addr & 255);
+        printf("\n");
+
+        for (j = 0; j < MODES_FREQ_HOP_BINS; ++j) {
+            printf("  %.1fMHz: %6d msg, %3d ac: ", MODES_FREQ_HOP_BIN_CENTER(j) / 1000000.0, Modes.stat_goodcrc_freq[j], heard_on_freq[j]);
+            for (a = Modes.aircrafts; a; a = a->next) {
+                if (a->heard_on_freq[j]) {
+                    int c;
+                    for (c = 0; c < 31 && (1<<c) < a->heard_on_freq[j]; ++c)
+                        ;
+                    printf("%2d", c);
+                } else {
+                    printf("  ");
+                }
+            }
+            printf("\n");
+        }
+    }            
+
     fflush(stdout);
 
     Modes.stat_blocks_processed =
@@ -806,6 +867,8 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j],"--oversample")) {
             Modes.oversample = 1;
             fprintf(stderr, "Oversampling enabled. Be very afraid.\n");
+        } else if (!strcmp(argv[j],"--freq-hop")) {
+            Modes.freq_hop = 1;
         } else {
             fprintf(stderr,
                 "Unknown or not enough arguments for option '%s'.\n\n",
@@ -893,6 +956,7 @@ int main(int argc, char **argv) {
             computeMagnitudeVector(Modes.pData[Modes.iDataOut]);
 
             Modes.stSystemTimeBlk = Modes.stSystemTimeRTL[Modes.iDataOut];
+            Modes.blkFreqBin = Modes.blkFreqBinRTL[Modes.iDataOut];
 
             // Update the input buffer pointer queue
             Modes.iDataOut   = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataOut + 1); 
@@ -908,6 +972,31 @@ int main(int argc, char **argv) {
             // It's safe to release the lock now
             pthread_cond_signal (&Modes.data_cond);
             pthread_mutex_unlock(&Modes.data_mutex);
+
+            // Maybe retune.
+            if (Modes.freq_hop) {
+                static time_t next_retune = 0;
+                time_t now = time(NULL);
+
+                if (next_retune == 0)
+                    next_retune = now + 1;
+                else if (now > next_retune) {
+                    int rc, new_bin;
+                    next_retune = now + 1;
+                    new_bin = (Modes.freq_bin + 1) % MODES_FREQ_HOP_BINS;
+                    if ((rc = rtlsdr_set_center_freq(Modes.dev, MODES_FREQ_HOP_BIN_CENTER(new_bin))) < 0) {
+                        fprintf(stderr, "retuning to %d Hz failed: %d\n", MODES_FREQ_HOP_BIN_CENTER(new_bin), rc);
+                    }
+
+                    // now update the global (not safe to hold the lock while retuning)
+                    // subseqently received buffers will be tagged with the new bin value
+                    pthread_mutex_lock(&Modes.data_mutex);
+                    Modes.freq_bin = new_bin;
+                    pthread_mutex_unlock(&Modes.data_mutex);
+                }
+            }
+
+
 
             // Process data after releasing the lock, so that the capturing
             // thread can read data while we perform computationally expensive

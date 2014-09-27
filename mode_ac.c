@@ -387,6 +387,7 @@ void decodeModeAMessage(struct modesMessage *mm, int ModeA)
   // Just fudge up a few bits to keep other code happy
   mm->crcok = 1;
   mm->correctedbits = 0;
+  mm->freq_bin = -1;
   }
 //
 // ===================== Mode A/C detection and decoding  ===================

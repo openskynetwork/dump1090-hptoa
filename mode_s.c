@@ -1812,6 +1812,7 @@ void detectModeS(uint16_t *m, uint32_t mlen) {
             mm.timestampMsg = Modes.timestampBlk + (j*6);
             mm.signalLevel = (snr > 255 ? 255 : (uint8_t)snr);
             mm.phase_corrected = use_correction;
+            mm.freq_bin = Modes.blkFreqBin;
 
             // Decode the received message
             decodeModesMessage(&mm, msg);
@@ -1861,6 +1862,10 @@ void detectModeS(uint16_t *m, uint32_t mlen) {
                             Modes.stat_bit_fix[mm.correctedbits-1] += 1;
                         }
                     }
+                }
+
+                if (mm.crcok && Modes.blkFreqBin != -1) {
+                    Modes.stat_goodcrc_freq[Modes.blkFreqBin]++;
                 }
             }
 
@@ -2350,6 +2355,7 @@ void detectModeS_oversample(uint16_t *m, uint32_t mlen) {
             mm.timestampMsg = Modes.timestampBlk + (j*5) + initial_phase;
             mm.signalLevel = (snr > 255 ? 255 : (uint8_t)snr);
             mm.phase_corrected = 0;
+            mm.freq_bin = Modes.blkFreqBin;
             
             //dumpRawMessage("decoded with oversampling", msg, m, j);
             
@@ -2377,6 +2383,10 @@ void detectModeS_oversample(uint16_t *m, uint32_t mlen) {
                          && (mm.correctedbits <= MODES_MAX_BITERRORS) ) {
                         Modes.stat_bit_fix[mm.correctedbits-1] += 1;
                     }
+                }
+
+                if (mm.crcok && Modes.blkFreqBin != -1) {
+                    Modes.stat_goodcrc_freq[Modes.blkFreqBin]++;
                 }
             }
             
