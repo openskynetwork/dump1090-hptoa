@@ -20,5 +20,5 @@ Description: ADS-B Ground Station System for RTL-SDR
  Includes a mini-webserver that you can access to see aircraft in the vicinity
  of your receiver.
  .
- t automatically shares data with FlightAware and can be used/configured
+ It automatically shares data with FlightAware and can be used/configured
  to share messages with other services.
