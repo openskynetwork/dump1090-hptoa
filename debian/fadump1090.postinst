@@ -20,7 +20,7 @@ set -e
 
 case "$1" in
     configure)
-	update-rc.d fadump1090.sh defaults >/dev/null
+        adduser --system --home /usr/share/dump1090 --no-create-home --quiet fa1090
     ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)

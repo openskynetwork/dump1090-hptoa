@@ -1,0 +1,16 @@
+# Defaults for fadump1090 initscript
+# sourced by /etc/init.d/fadump1090
+# installed at /etc/default/fadump1090 by the maintainer scripts
+
+#
+# This is a POSIX shell fragment
+#
+
+# Should dump1090 be started on boot?
+START_DUMP1090="yes"
+
+# Additional options that are passed to the Daemon.
+DAEMON_ARGS="--quiet --net --net-ro-size 500 --net-ro-rate 5 --net-buffer 5"
+
+# User to run dump1090 as
+RUNASUSER="fa1090"
