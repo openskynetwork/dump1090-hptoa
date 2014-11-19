@@ -60,9 +60,11 @@ install-faup1090: faup1090
 	install -d $(BINDIR)
 	install -t $(BINDIR) faup1090
 
-install-autostart:
+install-rcd:
 	install -d $(ETCDIR)/init.d
 	install -t $(ETCDIR)/init.d fadump1090.sh
+
+install-autostart: install-rcd
 	update-rc.d fadump1090.sh defaults
 
 install: install-dump1090 install-view1090 install-faup1090 install-doc install-html
