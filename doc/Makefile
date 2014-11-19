@@ -2,7 +2,7 @@
 # makefile for piaware doc files
 #
 
-DOCDIR=/usr/share/man/man1
+DOCDIR=$(DESTDIR)/usr/share/man/man1
 
 MANPAGES= dump1090.1
 
@@ -11,7 +11,6 @@ all:
 
 install:
 	@echo ---- installing docs
-	cp $(MANPAGES) $(DOCDIR)
-	@echo --- compressing docs
-	cd $(DOCDIR); gzip --force -9 $(MANPAGES)
+	install -d $(DOCDIR)
+	install -t $(DOCDIR) $(MANPAGES)
 
