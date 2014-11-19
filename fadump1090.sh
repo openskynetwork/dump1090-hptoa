@@ -1,13 +1,11 @@
 #!/bin/bash
 ### BEGIN INIT INFO
-#
 # Provides:		dump1090
 # Required-Start:	$remote_fs
 # Required-Stop:	$remote_fs
 # Default-Start:	2 3 4 5
 # Default-Stop:		0 1 6
 # Short-Description:	dump1090 initscript
-#
 ### END INIT INFO
 # Fill in name of program here.
 PROG_ARGS="--quiet --net --net-ro-size 500 --net-ro-rate 5 --net-buffer 5"
