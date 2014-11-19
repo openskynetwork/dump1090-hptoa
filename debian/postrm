@@ -21,7 +21,7 @@ set -e
 
 case "$1" in
     purge|remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
-	update-rc.d fadump1090.sh remove >/dev/null
+	update-rc.d -f fadump1090.sh remove >/dev/null
     ;;
 
     *)
