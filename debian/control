@@ -9,7 +9,7 @@ Homepage: https://github.com/flightaware
 #Vcs-Browser: http://git.debian.org/?p=collab-maint/fa-adept-adsb.git;a=summary
 
 Package: fadump1090
-Architecture: armhf
+Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, net-tools
 Description: ADS-B Ground Station System for RTL-SDR
  Networked Aviation Mode S / ADS-B decoder/translator with RTL-SDR software
