@@ -22,3 +22,10 @@ Description: ADS-B Ground Station System for RTL-SDR
  .
  It automatically shares data with FlightAware and can be used/configured
  to share messages with other services.
+
+Package: faup1090
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, net-tools
+Description: ADS-B Ground Station System for RTL-SDR (FlightAware glue)
+ faup1090 provides glue between a stock dump1090 installation and
+ the piaware feeder software.

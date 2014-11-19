@@ -1,0 +1,4 @@
+usr/bin/dump1090
+usr/bin/view1090
+usr/share/*
+etc/init.d/fadump1090.sh

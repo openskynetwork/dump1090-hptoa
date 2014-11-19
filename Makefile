@@ -67,4 +67,4 @@ install-rcd:
 install-autostart: install-rcd
 	update-rc.d fadump1090.sh defaults
 
-install: install-dump1090 install-view1090 install-faup1090 install-doc install-html
+install: install-dump1090 install-view1090 install-faup1090 install-doc install-html install-rcd
