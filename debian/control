@@ -2,7 +2,7 @@ Source: fadump1090
 Section: embedded
 Priority: extra
 Maintainer: FlightAware Developers <adsb-devs@flightaware.com>
-Build-Depends: debhelper(>=8), net-tools
+Build-Depends: debhelper(>=8), net-tools, librtlsdr-dev
 Standards-Version: 3.9.3
 Homepage: https://github.com/flightaware
 #Vcs-Git: git://git.debian.org/collab-maint/fa-adept-adsb.git
