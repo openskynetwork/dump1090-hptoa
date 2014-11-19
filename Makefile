@@ -6,14 +6,13 @@ PROGNAME=dump1090
 
 include /usr/share/dpkg/buildflags.mk
 
-PREFIX=/usr
+PREFIX=$(DESTDIR)/usr
 
-ifdef PREFIX
 BINDIR=$(PREFIX)/bin
 SHAREDIR=$(PREFIX)/share/$(PROGNAME)
 HTMLDIR=$(SHAREDIR)/public_html
+ETCDIR=$(DESTDIR)/etc
 EXTRACFLAGS=-DHTMLPATH=\"$(HTMLDIR)\"
-endif
 
 #CFLAGS=-O2 -g -Wall -W `pkg-config --cflags librtlsdr`
 CFLAGS+= `pkg-config --cflags librtlsdr`
@@ -21,10 +20,10 @@ LIBS=`pkg-config --libs librtlsdr` -lpthread -lm
 CC=gcc
 
 
-all: dump1090 view1090
+all: dump1090 view1090 faup1090
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(EXTRACFLAGS) -c $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(EXTRACFLAGS) -c $<
 
 dump1090: dump1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o
 	$(CC) -g -o dump1090 dump1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o $(LIBS) $(LDFLAGS)
@@ -32,13 +31,24 @@ dump1090: dump1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o
 view1090: view1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o
 	$(CC) -g -o view1090 view1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o $(LIBS) $(LDFLAGS)
 
+faup1090: faup1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o
+	$(CC) -g -o faup1090 faup1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o $(LIBS) $(LDFLAGS)
+
+# not built by default:
+ppup1090: ppup1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o
+	$(CC) -g -o ppup1090 ppup1090.o anet.o interactive.o mode_ac.o mode_s.o net_io.o coaa1090.obj $(LIBS) $(LDFLAGS)
+
 clean:
-	rm -f *.o dump1090 view1090
+	rm -f *.o dump1090 view1090 faup1090 ppup1090
 
 install-doc:
 	$(MAKE) -C doc install
 
-install:    install-doc
-	install -t $(BINDIR) dump1090 view1090
-	mkdir -p $(HTMLDIR)
+install:    all install-doc
+	install -d $(BINDIR) $(SHAREDIR) $(ETCDIR)/init.d
+	install -t $(BINDIR) dump1090 view1090 faup1090
+	install -t $(ETCDIR)/init.d fadump1090.sh
 	cp -R public_html $(SHAREDIR)
+
+install-autostart: install
+	update-rc.d fadump1090.sh defaults
