@@ -4,13 +4,13 @@ all:
 	$(MAKE) -f Makefile faup1090
 
 install-faup1090:
-	$(MAKE) -f Makefile install
+	$(MAKE) -f Makefile install-faup1090
 
 install-dump1090:
-	$(MAKE) -f Makefile install
+	$(MAKE) -f Makefile install-dump1090
 
 install-autostart:
 	$(MAKE) -f Makefile install-autostart
 
 full-install:
-	$(MAKE) -f Makefile install-autostart
+	$(MAKE) -f Makefile install install-autostart

@@ -44,11 +44,25 @@ clean:
 install-doc:
 	$(MAKE) -C doc install
 
-install:    all install-doc
-	install -d $(BINDIR) $(SHAREDIR) $(ETCDIR)/init.d
-	install -t $(BINDIR) dump1090 view1090 faup1090
-	install -t $(ETCDIR)/init.d fadump1090.sh
+install-html:
+	install -d $(SHAREDIR)
 	cp -R public_html $(SHAREDIR)
 
-install-autostart: install
+install-dump1090: dump1090
+	install -d $(BINDIR)
+	install -t $(BINDIR) dump1090
+
+install-view1090: view1090
+	install -d $(BINDIR)
+	install -t $(BINDIR) view1090
+
+install-faup1090: faup1090
+	install -d $(BINDIR)
+	install -t $(BINDIR) faup1090
+
+install-autostart:
+	install -d $(ETCDIR)/init.d
+	install -t $(ETCDIR)/init.d fadump1090.sh
 	update-rc.d fadump1090.sh defaults
+
+install: install-dump1090 install-view1090 install-faup1090 install-doc install-html
