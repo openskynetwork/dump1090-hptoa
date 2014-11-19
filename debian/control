@@ -1,4 +1,4 @@
-Source: dump1090
+Source: fadump1090
 Section: embedded
 Priority: extra
 Maintainer: FlightAware Developers <adsb-devs@flightaware.com>
@@ -8,7 +8,7 @@ Homepage: https://github.com/flightaware
 #Vcs-Git: git://git.debian.org/collab-maint/fa-adept-adsb.git
 #Vcs-Browser: http://git.debian.org/?p=collab-maint/fa-adept-adsb.git;a=summary
 
-Package: dump1090
+Package: fadump1090
 Architecture: armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}, net-tools
 Description: ADS-B Ground Station System for RTL-SDR
