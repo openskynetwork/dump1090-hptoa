@@ -10,7 +10,7 @@ Homepage: https://github.com/flightaware
 
 Package: fadump1090
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, net-tools
+Depends: ${shlibs:Depends}, ${misc:Depends}, net-tools, adduser
 Description: ADS-B Ground Station System for RTL-SDR
  Networked Aviation Mode S / ADS-B decoder/translator with RTL-SDR software
  defined radio USB device support plus piaware, software to forward
