@@ -2151,7 +2151,7 @@ int decodeCPRrelative(struct aircraft *a, int fflag, int surface) {
     if (a->bFlags & MODES_ACFLAGS_LATLON_REL_OK) { // Ok to try aircraft relative first
         latr = a->lat;
         lonr = a->lon;
-    } else if (Modes.bUserFlags & MODES_USER_LATLON_VALID) { // Try ground station relative next
+    } else if (!surface && (Modes.bUserFlags & MODES_USER_LATLON_VALID)) { // Try ground station relative next
         latr = Modes.fUserLat;
         lonr = Modes.fUserLon;
     } else {
