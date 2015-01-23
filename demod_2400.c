@@ -151,6 +151,8 @@ static int best_phase(uint16_t *m) {
     return best;
 }
 
+static void visualize(uint16_t *m, uint32_t j, int phase, uint32_t mlen, struct modesMessage *mm);
+
 //
 // Given 'mlen' magnitude samples in 'm', sampled at 2.4MHz,
 // try to demodulate some Mode S messages.
@@ -464,6 +466,7 @@ void demodulate2400(uint16_t *m, uint32_t mlen) {
                 continue;
             } else {
                 Modes.stats_current.demod_accepted[mm.correctedbits]++;
+                visualize(m, j, bestphase, mlen, &mm);
             }
         }
 
@@ -489,3 +492,113 @@ void demodulate2400(uint16_t *m, uint32_t mlen) {
 #endif
 }
 
+#include <gd.h>
+
+void visualize(uint16_t *m, uint32_t j, int phase, uint32_t mlen, struct modesMessage *mm)
+{
+    static int file_counter;
+
+    char filename[PATH_MAX];
+    FILE *pngout;
+    uint32_t start, end, i;
+    gdImagePtr im;
+    uint16_t minm, maxm, range;
+    int white, red, green, blue;
+
+    if (!mm->correctedbits || mm->msgbits != 56)
+        return;
+
+    if (j < 20)
+        start = 0;
+    else
+        start = j-20;
+
+    end = j + (8 + mm->msgbits) * 12/5 + 20;
+    if (end > mlen + Modes.trailing_samples)
+        end = mlen + Modes.trailing_samples;
+
+    minm = 65535;
+    maxm = 0;
+    for (i = start; i < end; ++i) {
+        if (m[i] < minm)
+            minm = m[i];
+        if (m[i] > maxm)
+            maxm = m[i];
+    }
+
+    if (minm < 500) minm = 0;
+    else minm -= 500;
+
+    if (maxm > 65535-500) maxm = 65535;
+    else maxm += 500;
+
+    range = maxm - minm + 1;
+    im = gdImageCreate((end - start)*5, 230);
+
+    white = gdImageColorAllocate(im, 255, 255, 255);  
+    //gdImageColorTransparent(im, white);
+    gdImageFilledRectangle(im, 0, 0, (end-start)*5-1, 229, white);
+
+    red = gdImageColorAllocate(im, 255, 0, 0);  
+    green = gdImageColorAllocate(im, 0, 255, 0);  
+    blue = gdImageColorAllocate(im, 0, 0, 255);  
+
+    for (i = 0; i < (uint32_t)mm->msgbits; ++i) {
+        int x1 = ((j + 19 - start)*5 + phase + i*12);
+        int x2 = ((j + 19 - start)*5 + phase + (i+1)*12);
+
+        int bit_c = mm->msg[i/8] & (1 << (7 - (i&7)));
+        int bit_u = mm->verbatim[i/8] & (1 << (7 - (i&7)));
+
+        gdImageLine(im, x1, 0, x1, 200, blue);
+
+        if (bit_u) {
+            if (bit_c) {
+                // 1 bit, correct
+                gdImageRectangle(im, x1, 205, x2, 225, blue);
+            } else {
+                // 1 bit, corrected to 0
+                gdImageFilledRectangle(im, x1+1, 205, x2-1, 225, red);
+                gdImageRectangle(im, x1, 220, x2, 225, blue);
+            } 
+        } else {
+            if (!bit_c) {
+                // 0 bit, correct
+                gdImageLine(im, x1, 225, x2, 225, blue);
+            } else {
+                // 0 bit, corrected to 1
+                gdImageRectangle(im, x1, 205, x2, 225, blue);
+                gdImageFilledRectangle(im, x1+1, 220, x2-1, 225, red);
+            } 
+        }
+    }
+
+    for (i = start; i < end; ++i)
+        gdImageFilledRectangle(im, (i-start)*5, 200 * (maxm - m[i]) / range, (i-start+1)*5-1, 200 * (maxm - minm) / range, green);
+
+    { 
+        // preamble peaks and data start/end
+
+        int ds = ((j + 19 - start)*5 + phase);
+        int de = ((j + 19 - start)*5 + phase + mm->msgbits * 12);
+        int p1 = ((j + 19 - start)*5 + phase + (-16+0)*6 + 3);
+        int p2 = ((j + 19 - start)*5 + phase + (-16+2)*6 + 3);
+        int p3 = ((j + 19 - start)*5 + phase + (-16+7)*6 + 3);
+        int p4 = ((j + 19 - start)*5 + phase + (-16+9)*6 + 3);
+
+        gdImageLine(im, p1, 210, p1, 220, blue);
+        gdImageLine(im, p2, 210, p2, 220, blue);
+        gdImageLine(im, p3, 210, p3, 220, blue);
+        gdImageLine(im, p4, 210, p4, 220, blue);
+        gdImageLine(im, ds, 0, ds, 230, blue);
+        gdImageLine(im, de, 0, de, 230, blue);
+    }    
+
+    sprintf(filename, "sig%04d.png", ++file_counter);
+    pngout = fopen(filename, "wb");
+    gdImagePng(im, pngout);
+    fclose(pngout);
+
+    fprintf(stderr, "wrote %s start %u end %u min %u max %u range %u\n", filename, start, end, minm, maxm, range);
+    gdImageDestroy(im);
+}

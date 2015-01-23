@@ -419,7 +419,7 @@ int decodeModesMessage(struct modesMessage *mm, unsigned char *msg)
 {
     // Work on our local copy.
     memcpy(mm->msg, msg, MODES_LONG_MSG_BYTES);
-    if (Modes.net_verbatim) {
+    /* if (Modes.net_verbatim) */ {
         // Preserve the original uncorrected copy for later forwarding
         memcpy(mm->verbatim, msg, MODES_LONG_MSG_BYTES);
     }

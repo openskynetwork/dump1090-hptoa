@@ -16,7 +16,7 @@ endif
 
 CPPFLAGS+=-DMODES_DUMP1090_VERSION=\"$(DUMP1090_VERSION)\"
 CFLAGS+=-O2 -g -Wall -Werror -W `pkg-config --cflags librtlsdr`
-LIBS=-lpthread -lm -lrt
+LIBS=-lpthread -lm -lrt -lgd
 LIBS_RTL=`pkg-config --libs librtlsdr`
 CC=gcc
 
