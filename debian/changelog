@@ -1,3 +1,9 @@
+dump1090-mutability (1.10.3010.14mu-12ubuntu1) trusty; urgency=medium
+
+  * Rebuild for Ubuntu.
+
+ -- Oliver Jowett <oliver@mutability.co.uk>  Sun, 25 Jan 2015 11:56:36 +0000
+
 dump1090-mutability (1.10.3010.14mu-12) unstable; urgency=medium
 
   * Add generation of history JSON.
