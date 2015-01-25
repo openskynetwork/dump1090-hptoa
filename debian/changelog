@@ -1,3 +1,9 @@
+dump1090-mutability (1.13ubuntu1) trusty; urgency=medium
+
+  * Rebuild for Ubuntu.
+
+ -- Oliver Jowett <oliver@mutability.co.uk>  Sun, 25 Jan 2015 18:32:47 +0000
+
 dump1090-mutability (1.13) unstable; urgency=medium
 
   * Moved to a simpler versioning scheme rather than trying
