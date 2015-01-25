@@ -144,7 +144,6 @@ int detectModeA(uint16_t *m, struct modesMessage *mm)
   int F1_sig, F1_noise;
   int F2_sig, F2_noise;
   int fSig, fNoise, fLevel, fLoLo;
-  int snr;
 
   // m[0] contains the energy from    0 ->  499 nS
   // m[1] contains the energy from  500 ->  999 nS
@@ -307,14 +306,7 @@ int detectModeA(uint16_t *m, struct modesMessage *mm)
   if ((ModeABits < 3) || (ModeABits & 0xFFFF8808) || (ModeAErrs) )
     {return (ModeABits = 0);}
 
-  // snr = 5 * 20log10(fSig / (fSig+fNoise))         (in units of 0.2dB)
-  //     = 100log10(fSig) - 100log10(fSig+fNoise)
-  while (fSig > 65535 || (fSig + fNoise) > 65535) {
-      fSig >>= 1;
-      fNoise >>= 1;
-  }
-  snr = Modes.log10lut[fSig] - Modes.log10lut[fSig + fNoise];
-  mm->signalLevel = ((snr < 255) ? (uint8_t)snr : 255);
+  mm->signalLevel = 1.0 * TRUE_AMPLITUDE(fSig + fNoise) * TRUE_AMPLITUDE(fSig + fNoise) / MAX_POWER;
 
   return ModeABits;
   }
@@ -372,9 +364,8 @@ void decodeModeAMessage(struct modesMessage *mm, int ModeA)
   mm->msg[0] = (ModeA >> 8);
   mm->msg[1] = (ModeA);
 
-  // Fudge an ICAO address based on Mode A (remove the Ident bit)
-  // Use an upper address byte of FF, since this is ICAO unallocated
-  mm->addr = 0x00FF0000 | (ModeA & 0x0000FF7F);
+  // Fudge an address based on Mode A (remove the Ident bit)
+  mm->addr = (ModeA & 0x0000FF7F) | MODES_NON_ICAO_ADDRESS;
 
   // Set the Identity field to ModeA
   mm->modeA   = ModeA & 0x7777;
@@ -385,7 +376,6 @@ void decodeModeAMessage(struct modesMessage *mm, int ModeA)
 
   // Not much else we can tell from a Mode A/C reply.
   // Just fudge up a few bits to keep other code happy
-  mm->crcok = 1;
   mm->correctedbits = 0;
   }
 //

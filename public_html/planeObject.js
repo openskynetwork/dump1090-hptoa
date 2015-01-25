@@ -48,6 +48,7 @@ function PlaneObject(icao) {
 
 	// Data packet numbers
 	this.messages  = null;
+        this.rssi      = null;
 
         // Track history as a series of line segments
         this.track_linesegs = [];
@@ -219,10 +220,13 @@ PlaneObject.prototype.updateIcon = function() {
 PlaneObject.prototype.updateData = function(receiver_timestamp, data) {
 	// Update all of our data
 	this.messages	= data.messages;
+        this.rssi       = data.rssi;
 	this.last_message_time = receiver_timestamp - data.seen;
         
         if (typeof data.altitude !== "undefined")
 		this.altitude	= data.altitude;
+        if (typeof data.vert_rate !== "undefined")
+		this.vert_rate	= data.vert_rate;
         if (typeof data.speed !== "undefined")
 		this.speed	= data.speed;
         if (typeof data.track !== "undefined")
@@ -253,7 +257,7 @@ PlaneObject.prototype.updateTick = function(receiver_timestamp) {
                         this.clearMarker();
                         this.visible = false;
 			if (SelectedPlane == this.icao)
-                                selectPlaneByHex(null);
+                                selectPlaneByHex(null,false);
                 }
 	} else {
                 this.visible = true;
@@ -297,7 +301,8 @@ PlaneObject.prototype.updateMarker = function(moved) {
 		});
                 
 		// Trap clicks for this marker.
-		google.maps.event.addListener(this.marker, 'click', selectPlaneByHex.bind(undefined,this.icao));
+		google.maps.event.addListener(this.marker, 'click', selectPlaneByHex.bind(undefined,this.icao,false));
+		google.maps.event.addListener(this.marker, 'dblclick', selectPlaneByHex.bind(undefined,this.icao,true));
 	}
         
 	// Setting the marker title

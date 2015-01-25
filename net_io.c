@@ -1,34 +1,56 @@
-// dump1090, a Mode S messages decoder for RTLSDR devices.
+// Part of dump1090, a Mode S message decoder for RTLSDR devices.
 //
-// Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
+// net_io.c: network handling.
 //
-// All rights reserved.
+// Copyright (c) 2014,2015 Oliver Jowett <oliver@mutability.co.uk>
 //
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
+// This file is free software: you may copy, redistribute and/or modify it  
+// under the terms of the GNU General Public License as published by the
+// Free Software Foundation, either version 2 of the License, or (at your  
+// option) any later version.  
 //
-//  *  Redistributions of source code must retain the above copyright
-//     notice, this list of conditions and the following disclaimer.
+// This file is distributed in the hope that it will be useful, but  
+// WITHOUT ANY WARRANTY; without even the implied warranty of  
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU  
+// General Public License for more details.
 //
-//  *  Redistributions in binary form must reproduce the above copyright
-//     notice, this list of conditions and the following disclaimer in the
-//     documentation and/or other materials provided with the distribution.
+// You should have received a copy of the GNU General Public License  
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// This file incorporates work covered by the following copyright and  
+// permission notice:
 //
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//   Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
 //
+//   All rights reserved.
+//
+//   Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are
+//   met:
+//
+//    *  Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//    *  Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+//   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+//   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+//   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+//   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+//   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+//   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+//   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+//   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+//   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dump1090.h"
+
+#include <assert.h>
+
 //
 // ============================= Networking =============================
 //
@@ -251,6 +273,7 @@ void modesSendBeastOutput(struct modesMessage *mm) {
     char * pTimeStamp;
     char ch;
     int  j;
+    unsigned char *msg = (Modes.net_verbatim ? mm->verbatim : mm->msg);
 
     if (!p)
         return;
@@ -271,11 +294,11 @@ void modesSendBeastOutput(struct modesMessage *mm) {
         if (0x1A == ch) {*p++ = ch; }
     }
 
-    *p++ = (ch = mm->signalLevel);
+    *p++ = ch = (char) round(sqrt(mm->signalLevel) * 255);
     if (0x1A == ch) {*p++ = ch; }
 
     for (j = 0; j < msgLen; j++) {
-        *p++ = (ch = mm->msg[j]);
+        *p++ = (ch = msg[j]);
         if (0x1A == ch) {*p++ = ch; }
     }
 
@@ -292,6 +315,7 @@ void modesSendRawOutput(struct modesMessage *mm) {
     char *p = prepareWrite(&Modes.raw_out, msgLen*2 + 15);
     int j;
     unsigned char * pTimeStamp;
+    unsigned char *msg = (Modes.net_verbatim ? mm->verbatim : mm->msg);
 
     if (!p)
         return;
@@ -307,7 +331,7 @@ void modesSendRawOutput(struct modesMessage *mm) {
         *p++ = '*';
 
     for (j = 0; j < msgLen; j++) {
-        sprintf(p, "%02X", mm->msg[j]);
+        sprintf(p, "%02X", msg[j]);
         p += 2;
     }
 
@@ -546,7 +570,9 @@ int decodeBinMessage(struct client *c, char *p) {
             if (0x1A == ch) {p++;}
         }
 
-        mm.signalLevel = ch = *p++;  // Grab the signal level
+        ch = *p++;  // Grab the signal level
+        mm.signalLevel = ((unsigned char)ch / 256.0);
+        mm.signalLevel = mm.signalLevel * mm.signalLevel + 1e-5;
         if (0x1A == ch) {p++;}
 
         for (j = 0; j < msgLen; j++) { // and the data
@@ -555,9 +581,22 @@ int decodeBinMessage(struct client *c, char *p) {
         }
 
         if (msgLen == MODEAC_MSG_BYTES) { // ModeA or ModeC
+            Modes.stats_current.remote_received_modeac++;
             decodeModeAMessage(&mm, ((msg[0] << 8) | msg[1]));
         } else {
-            decodeModesMessage(&mm, msg);
+            int result;
+
+            Modes.stats_current.remote_received_modes++;
+            result = decodeModesMessage(&mm, msg);
+            if (result < 0) {
+                if (result == -1)
+                    Modes.stats_current.remote_rejected_unknown_icao++;
+                else
+                    Modes.stats_current.remote_rejected_bad++;
+                return 0;
+            } else {
+                Modes.stats_current.remote_accepted[mm.correctedbits]++;
+            }
         }
 
         useModesMessage(&mm);
@@ -600,7 +639,7 @@ int decodeHexMessage(struct client *c, char *hex) {
     // Mark messages received over the internet as remote so that we don't try to
     // pass them off as being received by this instance when forwarding them
     mm.remote      =    1;
-    mm.signalLevel = 0xFF;
+    mm.signalLevel =    1e-5;
 
     // Remove spaces on the left and on the right
     while(l && isspace(hex[l-1])) {
@@ -617,7 +656,8 @@ int decodeHexMessage(struct client *c, char *hex) {
 
     switch(hex[0]) {
         case '<': {
-            mm.signalLevel = (hexDigitVal(hex[13])<<4) | hexDigitVal(hex[14]);
+            mm.signalLevel = ((hexDigitVal(hex[13])<<4) | hexDigitVal(hex[14])) / 256.0;
+            mm.signalLevel = mm.signalLevel * mm.signalLevel + 1e-5;
             hex += 15; l -= 16; // Skip <, timestamp and siglevel, and ;
             break;}
 
@@ -654,9 +694,22 @@ int decodeHexMessage(struct client *c, char *hex) {
     }
 
     if (l == (MODEAC_MSG_BYTES * 2)) {  // ModeA or ModeC
+        Modes.stats_current.remote_received_modeac++;
         decodeModeAMessage(&mm, ((msg[0] << 8) | msg[1]));
     } else {       // Assume ModeS
-        decodeModesMessage(&mm, msg);
+        int result;
+
+        Modes.stats_current.remote_received_modes++;
+        result = decodeModesMessage(&mm, msg);
+        if (result < 0) {
+            if (result == -1)
+                Modes.stats_current.remote_rejected_unknown_icao++;
+            else
+                Modes.stats_current.remote_rejected_bad++;
+            return 0;
+        } else {
+            Modes.stats_current.remote_accepted[mm.correctedbits]++;
+        }
     }
 
     useModesMessage(&mm);
@@ -667,24 +720,51 @@ int decodeHexMessage(struct client *c, char *hex) {
 //
 // Return a description of planes in json. No metric conversion
 //
+
+// usual caveats about function-returning-pointer-to-static-buffer apply
+static const char *jsonEscapeString(const char *str) {
+    static char buf[1024];
+    const char *in = str;
+    char *out = buf, *end = buf + sizeof(buf) - 10;
+
+    for (; *in && out < end; ++in) {
+        unsigned char ch = *in;
+        if (ch == '"' || ch == '\\') {
+            *out++ = '\\';
+            *out++ = ch;
+        } else if (ch < 32 || ch > 127) {
+            out += snprintf(out, end - out, "\\u%04x", ch);
+        } else {
+            *out++ = ch;
+        }
+    }
+
+    *out++ = 0;
+    return buf;
+}
+
 char *generateAircraftJson(const char *url_path, int *len) {
     time_t now = time(NULL);
-    struct aircraft *a = Modes.aircrafts;
+    struct aircraft *a;
     int buflen = 1024; // The initial buffer is incremented as needed
     char *buf = (char *) malloc(buflen), *p = buf, *end = buf+buflen;
     int first = 1;
 
-    (void) url_path;  // unused
+    MODES_NOTUSED(url_path);
 
     p += snprintf(p, end-p,
                   "{ \"now\" : %d,\n"
                   "  \"messages\" : %u,\n"
                   "  \"aircraft\" : [",
-                  (int)now, Modes.stat_messages_total);
+                  (int)now,
+                  Modes.stats_current.messages_total + Modes.stats_alltime.messages_total);
 
-    while(a) {
+    for (a = Modes.aircrafts; a; a = a->next) {
         if (a->modeACflags & MODEAC_MSG_FLAG) { // skip any fudged ICAO records Mode A/C
-            a = a->next;
+            continue;
+        }
+
+        if (a->messages < 2) { // basic filter for bad decodes
             continue;
         }
 
@@ -693,11 +773,11 @@ char *generateAircraftJson(const char *url_path, int *len) {
         else
             *p++ = ',';
             
-        p += snprintf(p, end-p, "\n    {\"hex\":\"%06x\"", a->addr);
+        p += snprintf(p, end-p, "\n    {\"hex\":\"%s%06x\"", (a->addr & MODES_NON_ICAO_ADDRESS) ? "~" : "", a->addr & 0xFFFFFF);
         if (a->bFlags & MODES_ACFLAGS_SQUAWK_VALID)
             p += snprintf(p, end-p, ",\"squawk\":\"%04x\"", a->modeA);
         if (a->bFlags & MODES_ACFLAGS_CALLSIGN_VALID)
-            p += snprintf(p, end-p, ",\"flight\":\"%s\"", a->flight);
+            p += snprintf(p, end-p, ",\"flight\":\"%s\"", jsonEscapeString(a->flight));
         if (a->bFlags & MODES_ACFLAGS_LATLON_VALID)
             p += snprintf(p, end-p, ",\"lat\":%f,\"lon\":%f,\"seen_pos\":%d", a->lat, a->lon, (int)(now - a->seenLatLon));
         if ((a->bFlags & MODES_ACFLAGS_AOG_VALID) && (a->bFlags & MODES_ACFLAGS_AOG))
@@ -711,8 +791,10 @@ char *generateAircraftJson(const char *url_path, int *len) {
         if (a->bFlags & MODES_ACFLAGS_SPEED_VALID)
             p += snprintf(p, end-p, ",\"speed\":%d", a->speed);
 
-        p += snprintf(p, end-p, ",\"messages\":%ld, \"seen\":%d}",
-                      a->messages, (int)(now - a->seen));
+        p += snprintf(p, end-p, ",\"messages\":%ld,\"seen\":%d,\"rssi\":%.1f}",
+                      a->messages, (int)(now - a->seen),
+                      10 * log10((a->signalLevel[0] + a->signalLevel[1] + a->signalLevel[2] + a->signalLevel[3] +
+                                  a->signalLevel[4] + a->signalLevel[5] + a->signalLevel[6] + a->signalLevel[7] + 1e-5) / 8));
         
         // If we're getting near the end of the buffer, expand it.
         if ((end - p) < 256) {
@@ -722,11 +804,133 @@ char *generateAircraftJson(const char *url_path, int *len) {
             p = buf+used;
             end = buf + buflen;
         }
-        
-        a = a->next;
     }
 
     p += snprintf(p, end-p, "\n  ]\n}\n");
+    *len = p-buf;
+    return buf;
+}
+
+static char * appendStatsJson(char *p,
+                              char *end,
+                              struct stats *st,
+                              const char *key)
+{
+    int i;
+
+    p += snprintf(p, end-p,
+                  "\"%s\":{\"start\":%d,\"end\":%d",
+                  key,
+                  (int)st->start,
+                  (int)st->end);
+
+    if (!Modes.net_only) {
+        p += snprintf(p, end-p,
+                      ",\"local\":{\"blocks_processed\":%u"
+                      ",\"blocks_dropped\":%u"
+                      ",\"modeac\":%u"
+                      ",\"modes\":%u"
+                      ",\"bad\":%u"
+                      ",\"unknown_icao\":%u",
+                      st->blocks_processed,
+                      st->blocks_dropped,
+                      st->demod_modeac,
+                      st->demod_preambles,
+                      st->demod_rejected_bad,
+                      st->demod_rejected_unknown_icao);
+
+        for (i=0; i <= Modes.nfix_crc; ++i) {
+            if (i == 0) p += snprintf(p, end-p, ",\"accepted\":[%u", st->demod_accepted[i]);
+            else p += snprintf(p, end-p, ",%u", st->demod_accepted[i]);
+        }
+
+        p += snprintf(p, end-p, "]");
+
+        if (st->signal_power_count > 0)
+            p += snprintf(p, end-p,",\"signal\":%.1f", 10 * log10(st->signal_power_sum / st->signal_power_count));
+        if (st->noise_power_count > 0)
+            p += snprintf(p, end-p,",\"noise\":%.1f", 10 * log10(st->noise_power_sum / st->noise_power_count));
+        if (st->peak_signal_power > 0)
+            p += snprintf(p, end-p,",\"peak_signal\":%.1f", 10 * log10(st->peak_signal_power));
+
+        p += snprintf(p, end-p,",\"strong_signals\":%d}", st->strong_signal_count);
+    }
+
+    if (Modes.net) {
+        p += snprintf(p, end-p,
+                      ",\"remote\":{\"modeac\":%u"
+                      ",\"modes\":%u"
+                      ",\"bad\":%u"
+                      ",\"unknown_icao\":%u",
+                      st->remote_received_modeac,
+                      st->remote_received_modes,
+                      st->remote_rejected_bad,
+                      st->remote_rejected_unknown_icao);
+
+        for (i=0; i <= Modes.nfix_crc; ++i) {
+            if (i == 0) p += snprintf(p, end-p, ",\"accepted\":[%u", st->remote_accepted[i]);
+            else p += snprintf(p, end-p, ",%u", st->remote_accepted[i]);
+        }
+
+        p += snprintf(p, end-p, "]");
+
+        p += snprintf(p, end-p, "},\"http_requests\":%u", st->http_requests);
+    }
+
+    {
+        uint64_t demod_cpu_millis = (uint64_t)st->demod_cpu.tv_sec*1000UL + st->demod_cpu.tv_nsec/1000000UL;
+        uint64_t reader_cpu_millis = (uint64_t)st->reader_cpu.tv_sec*1000UL + st->reader_cpu.tv_nsec/1000000UL;
+        uint64_t background_cpu_millis = (uint64_t)st->background_cpu.tv_sec*1000UL + st->background_cpu.tv_nsec/1000000UL;
+
+        p += snprintf(p, end-p,
+                      ",\"cpr\":{\"global_ok\":%u"
+                      ",\"global_bad\":%u"
+                      ",\"global_skipped\":%u"
+                      ",\"local_ok\":%u"
+                      ",\"local_skipped\":%u"
+                      ",\"filtered\":%u}"
+                      ",\"cpu\":{\"demod\":%llu,\"reader\":%llu,\"background\":%llu}"
+                      ",\"messages\":%u}",
+                      st->cpr_global_ok,
+                      st->cpr_global_bad,
+                      st->cpr_global_skipped,
+                      st->cpr_local_ok,
+                      st->cpr_local_skipped,
+                      st->cpr_filtered,
+                      (unsigned long long)demod_cpu_millis,
+                      (unsigned long long)reader_cpu_millis,
+                      (unsigned long long)background_cpu_millis,
+                      st->messages_total);
+    }
+
+    return p;
+}
+    
+char *generateStatsJson(const char *url_path, int *len) {
+    struct stats add;
+    char *buf = (char *) malloc(4096), *p = buf, *end = buf + 4096;
+
+    MODES_NOTUSED(url_path);
+
+    p += snprintf(p, end-p, "{\n");
+    p = appendStatsJson(p, end, &Modes.stats_current, "latest");
+    p += snprintf(p, end-p, ",\n");
+
+    p = appendStatsJson(p, end, &Modes.stats_1min[Modes.stats_latest_1min], "last1min");
+    p += snprintf(p, end-p, ",\n");
+
+    p = appendStatsJson(p, end, &Modes.stats_5min, "last5min");
+    p += snprintf(p, end-p, ",\n");
+
+    p = appendStatsJson(p, end, &Modes.stats_15min, "last15min");
+    p += snprintf(p, end-p, ",\n");
+
+    add_stats(&Modes.stats_alltime, &Modes.stats_current, &add);
+    p = appendStatsJson(p, end, &add, "total");
+    p += snprintf(p, end-p, "\n}\n");    
+
+    assert(p <= end);
+
     *len = p-buf;
     return buf;
 }
@@ -739,7 +943,7 @@ char *generateReceiverJson(const char *url_path, int *len)
     char *buf = (char *) malloc(1024), *p = buf;
     int history_size;
 
-    (void)url_path;  // unused
+    MODES_NOTUSED(url_path);
 
     // work out number of valid history entries
     if (Modes.json_aircraft_history[HISTORY_SIZE-1].content == NULL)
@@ -858,6 +1062,7 @@ static struct {
 } url_handlers[] = {
     { "/data/aircraft.json", generateAircraftJson, MODES_CONTENT_TYPE_JSON, 0 },
     { "/data/receiver.json", generateReceiverJson, MODES_CONTENT_TYPE_JSON, 0 },
+    { "/data/stats.json", generateStatsJson, MODES_CONTENT_TYPE_JSON, 0 },
     { "/data/history_", generateHistoryJson, MODES_CONTENT_TYPE_JSON, 1 },
     { NULL, NULL, NULL, 0 }
 };
@@ -1027,7 +1232,7 @@ int handleHTTPRequest(struct client *c, char *p) {
         return 1;
     }
     free(content);
-    Modes.stat_http_requests++;
+    Modes.stats_current.http_requests++;
     return !keepalive;
 }
 //
@@ -1197,11 +1402,18 @@ static void writeFATSV() {
         int emittedSecondsAgo;
         char *p, *end;
 
+        // skip non-ICAO
+        if (a->addr & MODES_NON_ICAO_ADDRESS)
+            continue;
+
+        if (a->messages < 2)  // basic filter for bad decodes
+            continue;
+
         // don't emit if it hasn't updated since last time
         if (a->seen < a->fatsv_last_emitted) {
             continue;
         }
-        
+
         emittedSecondsAgo = (int)(now - a->fatsv_last_emitted);
 
         // don't emit more than once every five seconds

@@ -1,44 +1,58 @@
-// dump1090, a Mode S messages decoder for RTLSDR devices.
+// Part of dump1090, a Mode S message decoder for RTLSDR devices.
 //
-// Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
+// dump1090.h: main program header
 //
-// All rights reserved.
+// Copyright (c) 2014,2015 Oliver Jowett <oliver@mutability.co.uk>
 //
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
+// This file is free software: you may copy, redistribute and/or modify it  
+// under the terms of the GNU General Public License as published by the
+// Free Software Foundation, either version 2 of the License, or (at your  
+// option) any later version.  
 //
-//  *  Redistributions of source code must retain the above copyright
-//     notice, this list of conditions and the following disclaimer.
+// This file is distributed in the hope that it will be useful, but  
+// WITHOUT ANY WARRANTY; without even the implied warranty of  
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU  
+// General Public License for more details.
 //
-//  *  Redistributions in binary form must reproduce the above copyright
-//     notice, this list of conditions and the following disclaimer in the
-//     documentation and/or other materials provided with the distribution.
+// You should have received a copy of the GNU General Public License  
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// This file incorporates work covered by the following copyright and  
+// permission notice:
 //
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//   Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
 //
+//   All rights reserved.
+//
+//   Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are
+//   met:
+//
+//    *  Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//    *  Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+//   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+//   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+//   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+//   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+//   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+//   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+//   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+//   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+//   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 #ifndef __DUMP1090_H
 #define __DUMP1090_H
 
-// File Version number
-// ====================
-// Format is : MajorVer.MinorVer.DayMonth.Year"
-// MajorVer changes only with significant changes
-// MinorVer changes when additional features are added, but not for bug fixes (range 00-99)
-// DayDate & Year changes for all changes, including for bug fixes. It represent the release date of the update
-//
+// Default version number, if not overriden by the Makefile
 #ifndef MODES_DUMP1090_VERSION
-# define MODES_DUMP1090_VERSION     "1.10.3010.14+mu"
+# define MODES_DUMP1090_VERSION     "v1.13-custom"
 #endif
 
 #ifndef MODES_DUMP1090_VARIANT
@@ -65,26 +79,13 @@
     #include <sys/ioctl.h>
     #include <time.h>
     #include <limits.h>
-    #include "rtl-sdr.h"
-    #include "anet.h"
 #else
     #include "winstubs.h" //Put everything Windows specific in here
-    #include "rtl-sdr.h"
-    #include "anet.h"
 #endif
 
+#include <rtl-sdr.h>
+
 // ============================= #defines ===============================
-//
-// If you have a valid coaa.h, these values will come from it. If not,
-// then you can enter your own values in the #else section here
-//
-#ifdef USER_LATITUDE
-    #define MODES_USER_LATITUDE_DFLT   (USER_LATITUDE)
-    #define MODES_USER_LONGITUDE_DFLT  (USER_LONGITUDE)
-#else
-    #define MODES_USER_LATITUDE_DFLT   (0.0)
-    #define MODES_USER_LONGITUDE_DFLT  (0.0)
-#endif
 
 #define MODES_DEFAULT_PPM          52
 #define MODES_DEFAULT_RATE         2000000
@@ -99,9 +100,6 @@
 #define MODES_MAX_GAIN             999999                     // Use max available gain
 #define MODES_MSG_SQUELCH_DB       4.0                        // Minimum SNR, in dB
 #define MODES_MSG_ENCODER_ERRS     3                          // Maximum number of encoding errors
-
-// When changing, change also fixBitErrors() and modesInitErrorTable() !!
-#define MODES_MAX_BITERRORS        2                          // Global max for fixable bit erros
 
 #define MODES_MAX_PHASE_STATS      10
 
@@ -138,8 +136,6 @@
 #define MODES_OUT_FLUSH_SIZE       (MODES_OUT_BUF_SIZE - 256)
 #define MODES_OUT_FLUSH_INTERVAL   (60)
 
-#define MODES_ICAO_CACHE_LEN 1024 // Power of two required
-#define MODES_ICAO_CACHE_TTL 60   // Time to live of cached addresses
 #define MODES_UNIT_FEET 0
 #define MODES_UNIT_METERS 1
 
@@ -161,10 +157,13 @@
 #define MODES_ACFLAGS_FS_VALID       (1<<13) // Aircraft Flight Status is known
 #define MODES_ACFLAGS_NSEWSPD_VALID  (1<<14) // Aircraft EW and NS Speed is known
 #define MODES_ACFLAGS_LATLON_REL_OK  (1<<15) // Indicates it's OK to do a relative CPR
+#define MODES_ACFLAGS_REL_CPR_USED   (1<<16) // Lat/lon derived from relative CPR
 
 #define MODES_ACFLAGS_LLEITHER_VALID (MODES_ACFLAGS_LLEVEN_VALID | MODES_ACFLAGS_LLODD_VALID)
 #define MODES_ACFLAGS_LLBOTH_VALID   (MODES_ACFLAGS_LLEVEN_VALID | MODES_ACFLAGS_LLODD_VALID)
 #define MODES_ACFLAGS_AOG_GROUND     (MODES_ACFLAGS_AOG_VALID    | MODES_ACFLAGS_AOG)
+
+#define MODES_NON_ICAO_ADDRESS       (1<<24) // Set on addresses to indicate they are not ICAO addresses
 
 #define MODES_DEBUG_DEMOD (1<<0)
 #define MODES_DEBUG_DEMODERR (1<<1)
@@ -201,7 +200,26 @@
 #define HTMLPATH   "./public_html"      // default path for gmap.html etc
 #endif
 
+#define HISTORY_SIZE 120
+#define HISTORY_INTERVAL 30
+
 #define MODES_NOTUSED(V) ((void) V)
+
+// adjust for zero offset of amplitude values
+#define TRUE_AMPLITUDE(x) ((x) + 365)
+#define MAX_AMPLITUDE TRUE_AMPLITUDE(65535)
+#define MAX_POWER (1.0 * MAX_AMPLITUDE * MAX_AMPLITUDE)
+
+// Include subheaders after all the #defines are in place
+
+#include "anet.h"
+#include "crc.h"
+#include "demod_2000.h"
+#include "demod_2400.h"
+#include "stats.h"
+#include "cpr.h"
+#include "icao_filter.h"
+
 
 //======================== structure declarations =========================
 
@@ -214,14 +232,11 @@ struct client {
     char   buf[MODES_CLIENT_BUF_SIZE+1]; // Read buffer
 };
 
-#define HISTORY_SIZE 120
-#define HISTORY_INTERVAL 30
-
 // Structure used to describe an aircraft in iteractive mode
 struct aircraft {
     uint32_t      addr;           // ICAO address
     char          flight[16];     // Flight number
-    unsigned char signalLevel[8]; // Last 8 Signal Amplitudes
+    double        signalLevel[8]; // Last 8 Signal Amplitudes
     int           altitude;       // Altitude
     int           speed;          // Velocity
     int           track;          // Angle of flight
@@ -253,22 +268,6 @@ struct aircraft {
     struct aircraft *next;        // Next aircraft in our linked list
 };
 
-// Common stats for non-phase-corrected vs phase-corrected cases
-struct demod_stats {
-    unsigned int demodulated0;
-    unsigned int demodulated1;
-    unsigned int demodulated2;
-    unsigned int demodulated3;
-    unsigned int goodcrc;
-    unsigned int goodcrc_byphase[MODES_MAX_PHASE_STATS];
-    unsigned int badcrc;
-    unsigned int fixed;
-
-    // Histogram of fixed bit errors: index 0 for single bit erros,
-    // index 1 for double bit errors etc.
-    unsigned int bit_fix[MODES_MAX_BITERRORS];
-};
-
 // Common writer state for all output sockets of one type
 struct net_writer {
     int socket;          // listening socket FD, used to identify the owning service
@@ -290,6 +289,7 @@ struct {                             // Internal state
     int             iDataOut;        // Fifo output pointer
     int             iDataReady;      // Fifo content count
     int             iDataLost;       // Count of missed buffers
+    struct timespec reader_cpu_accumulator; // CPU time used by the reader thread, copied out and reset by the main thread under the mutex
 
     int             trailing_samples;// extra trailing samples in magnitude buffer
 
@@ -298,7 +298,6 @@ struct {                             // Internal state
     uint64_t        timestampBlk;    // Timestamp of the start of the current block
     struct timeb    stSystemTimeBlk; // System time when RTL passed us currently processing this block
     int             fd;              // --ifile option file descriptor
-    uint32_t       *icao_cache;      // Recently seen ICAO addresses cache
     uint16_t       *maglut;          // I/Q -> Magnitude lookup table
     uint16_t       *log10lut;        // Magnitude -> log10 lookup table
     int             exit;            // Exit from the main loop when true
@@ -351,6 +350,7 @@ struct {                             // Internal state
     int   net_http_port;             // HTTP port
     int   net_fatsv_port;            // FlightAware TSV port
     int   net_sndbuf_size;           // TCP output buffer size (64Kb * 2^n)
+    int   net_verbatim;              // if true, send the original message, not the CRC-corrected one
     int   quiet;                     // Suppress stdout
     int   interactive;               // Interactive mode
     int   interactive_rows;          // Interactive mode: max number of rows
@@ -383,47 +383,31 @@ struct {                             // Internal state
     time_t           last_cleanup_time;       // Last cleanup time in seconds
 
     // Statistics
-    unsigned int stat_preamble_no_correlation;
-    unsigned int stat_preamble_not_quiet;
-    unsigned int stat_valid_preamble;
-    unsigned int stat_preamble_phase[MODES_MAX_PHASE_STATS];
-
-    struct demod_stats stat_demod;
-    struct demod_stats stat_demod_phasecorrected;
-
-    unsigned int stat_http_requests;
-    unsigned int stat_out_of_phase;
-
-    unsigned int stat_DF_Len_Corrected;
-    unsigned int stat_DF_Type_Corrected;
-    unsigned int stat_ModeAC;
-
-    unsigned int stat_blocks_processed;
-    unsigned int stat_blocks_dropped;
-
-    struct timespec stat_cputime;
-
-    // total messages:
-    unsigned int stat_messages_total;
+    struct stats stats_current;
+    struct stats stats_alltime;
+    struct stats stats_periodic;
+    struct stats stats_1min[15];
+    int stats_latest_1min;
+    struct stats stats_5min;
+    struct stats stats_15min;
 } Modes;
 
 // The struct we use to store information about a decoded message.
 struct modesMessage {
     // Generic fields
     unsigned char msg[MODES_LONG_MSG_BYTES];      // Binary message.
+    unsigned char verbatim[MODES_LONG_MSG_BYTES]; // Binary message, as originally received before correction
     int           msgbits;                        // Number of bits in message 
     int           msgtype;                        // Downlink format #
-    int           crcok;                          // True if CRC was valid
     uint32_t      crc;                            // Message CRC
     int           correctedbits;                  // No. of bits corrected 
-    char          corrected[MODES_MAX_BITERRORS]; // corrected bit positions
-    uint32_t      addr;                           // ICAO Address from bytes 1 2 and 3
-    int           phase_corrected;                // True if phase correction was applied
+    uint32_t      addr;                           // Address Announced
     uint64_t      timestampMsg;                   // Timestamp of the message
     int           remote;                         // If set this message is from a remote station
-    unsigned char signalLevel;                    // Signal Amplitude
+    double        signalLevel;                    // RSSI, in the range [0..1], as a fraction of full-scale power
+    int           score;                          // Scoring from scoreModesMessage, if used
 
-    // DF 11
+    // DF 11, DF 17
     int  ca;                    // Responder capabilities
     int  iid;
 
@@ -441,9 +425,15 @@ struct modesMessage {
     int    vert_rate;           // Vertical rate.
     int    velocity;            // Reported by aircraft, or computed from from EW and NS velocity
 
+    // DF 18
+    int    cf;                  // Control Field
+
     // DF4, DF5, DF20, DF21
     int  fs;                    // Flight status for DF4,5,20,21
     int  modeA;                 // 13 bits identity (Squawk).
+
+    // DF20, DF21
+    int  bds;                   // BDS value implied if overlay control was used
 
     // Fields used by multiple message types.
     int  altitude;
@@ -467,15 +457,12 @@ int  ModeAToModeC      (unsigned int ModeA);
 //
 // Functions exported from mode_s.c
 //
-void detectModeS        (uint16_t *m, uint32_t mlen);
-void detectModeS_oversample (uint16_t *m, uint32_t mlen);
-void decodeModesMessage (struct modesMessage *mm, unsigned char *msg);
+int modesMessageLenByType(int type);
+int scoreModesMessage(unsigned char *msg, int validbits);
+int decodeModesMessage (struct modesMessage *mm, unsigned char *msg);
 void displayModesMessage(struct modesMessage *mm);
 void useModesMessage    (struct modesMessage *mm);
 void computeMagnitudeVector(uint16_t *pData);
-int  decodeCPR          (struct aircraft *a, int fflag, int surface);
-int  decodeCPRrelative  (struct aircraft *a, int fflag, int surface);
-void modesInitErrorInfo ();
 //
 // Functions exported from interactive.c
 //
@@ -496,6 +483,7 @@ void modesNetPeriodicWork (void);
 void writeJsonToFile(const char *file, char * (*generator) (const char*,int*));
 char *generateAircraftJson(const char *url_path, int *len);
 char *generateReceiverJson(const char *url_path, int *len);
+char *generateStatsJson(const char *url_path, int *len);
 char *generateHistoryJson(const char *url_path, int *len);
 
 #ifdef __cplusplus

@@ -1,32 +1,51 @@
-// dump1090, a Mode S messages decoder for RTLSDR devices.
+// Part of dump1090, a Mode S message decoder for RTLSDR devices.
 //
-// Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
+// interactive.c: aircraft tracking and interactive display
 //
-// All rights reserved.
+// Copyright (c) 2014,2015 Oliver Jowett <oliver@mutability.co.uk>
 //
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
+// This file is free software: you may copy, redistribute and/or modify it  
+// under the terms of the GNU General Public License as published by the
+// Free Software Foundation, either version 2 of the License, or (at your  
+// option) any later version.  
 //
-//  *  Redistributions of source code must retain the above copyright
-//     notice, this list of conditions and the following disclaimer.
+// This file is distributed in the hope that it will be useful, but  
+// WITHOUT ANY WARRANTY; without even the implied warranty of  
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU  
+// General Public License for more details.
 //
-//  *  Redistributions in binary form must reproduce the above copyright
-//     notice, this list of conditions and the following disclaimer in the
-//     documentation and/or other materials provided with the distribution.
+// You should have received a copy of the GNU General Public License  
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// This file incorporates work covered by the following copyright and  
+// permission notice:
 //
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//   Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
 //
+//   All rights reserved.
+//
+//   Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are
+//   met:
+//
+//    *  Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//    *  Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+//   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+//   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+//   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+//   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+//   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+//   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+//   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+//   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+//   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dump1090.h"
 //
@@ -49,16 +68,18 @@ static uint64_t mstime(void) {
 // of aircraft
 //
 struct aircraft *interactiveCreateAircraft(struct modesMessage *mm) {
+    static struct aircraft zeroAircraft;
     struct aircraft *a = (struct aircraft *) malloc(sizeof(*a));
+    int i;
 
     // Default everything to zero/NULL
-    memset(a, 0, sizeof(*a));
+    *a = zeroAircraft;
 
     // Now initialise things that should not be 0/NULL to their defaults
     a->addr = mm->addr;
-    a->lat  = a->lon = 0.0;
-    memset(a->signalLevel, mm->signalLevel, 8); // First time, initialise everything
-                                                // to the first signal strength
+    for (i = 0; i < 8; ++i)
+        a->signalLevel[i] = mm->signalLevel;  // First time, initialise everything
+                                              // to the first signal strength
 
     // mm->msgtype 32 is used to represent Mode A/C. These values can never change, so 
     // set them once here during initialisation, and don't bother to set them every 
@@ -176,12 +197,192 @@ void interactiveUpdateAircraftModeS() {
 //
 // Receive new messages and populate the interactive mode with more info
 //
+
+// Distance between points on a spherical earth.
+// This has up to 0.5% error because the earth isn't actually spherical
+// (but we don't use it in situations where that matters)
+static double greatcircle(double lat0, double lon0, double lat1, double lon1)
+{
+    lat0 = lat0 * M_PI / 180.0;
+    lon0 = lon0 * M_PI / 180.0;
+    lat1 = lat1 * M_PI / 180.0;
+    lon1 = lon1 * M_PI / 180.0;
+    return 6371e3 * acos(sin(lat0) * sin(lat1) + cos(lat0) * cos(lat1) * cos(fabs(lon0 - lon1)));
+}
+
+static int doGlobalCPR(struct aircraft *a, int fflag, int surface)
+{
+    int result;
+    double lat=0, lon=0;
+
+    if (surface) {
+        // surface global CPR
+        // find reference location
+        double reflat, reflon;
+
+        if (a->bFlags & MODES_ACFLAGS_LATLON_REL_OK) { // Ok to try aircraft relative first
+            reflat = a->lat;
+            reflon = a->lon;
+        } else if (Modes.bUserFlags & MODES_USER_LATLON_VALID) {
+            reflat = Modes.fUserLat;
+            reflon = Modes.fUserLon;
+        } else {
+            // No local reference, give up
+            return (-1);
+        }
+
+        result = decodeCPRsurface(reflat, reflon,
+                                  a->even_cprlat, a->even_cprlon,
+                                  a->odd_cprlat, a->odd_cprlon,
+                                  fflag,
+                                  &lat, &lon);
+    } else {
+        // airborne global CPR
+        result = decodeCPRairborne(a->even_cprlat, a->even_cprlon,
+                                   a->odd_cprlat, a->odd_cprlon,
+                                   fflag,
+                                   &lat, &lon);
+    }
+
+    if (result < 0)
+        return result;
+
+    // check max range
+    if (Modes.maxRange > 0 && (Modes.bUserFlags & MODES_USER_LATLON_VALID)) {
+        double range = greatcircle(Modes.fUserLat, Modes.fUserLon, lat, lon);
+        if (range > Modes.maxRange)
+            return (-2); // we consider an out-of-range value to be bad data
+    }
+
+    a->lat = lat;
+    a->lon = lon;
+    return 0;
+}
+
+static int doLocalCPR(struct aircraft *a, int fflag, int surface, time_t now)
+{
+    // relative CPR
+    // find reference location
+    double reflat, reflon, lat=0, lon=0;
+    double range_limit = 0;
+    int result;
+
+    if (a->bFlags & MODES_ACFLAGS_LATLON_REL_OK) {
+        int elapsed = (int)(now - a->seenLatLon);
+        if (elapsed < 0) elapsed = 0;
+
+        reflat = a->lat;
+        reflon = a->lon;
+
+        // impose a range limit based on 2000km/h speed
+        range_limit = 5e3 + (2000e3 * elapsed / 3600); // 5km + 2000km/h
+    } else if (!surface && (Modes.bUserFlags & MODES_USER_LATLON_VALID)) {
+        reflat = Modes.fUserLat;
+        reflon = Modes.fUserLon;
+        
+        // The cell size is at least 360NM, giving a nominal
+        // max range of 180NM (half a cell).
+        //
+        // If the receiver range is more than half a cell
+        // then we must limit this range further to avoid
+        // ambiguity. (e.g. if we receive a position report
+        // at 200NM distance, this may resolve to a position
+        // at (200-360) = 160NM in the wrong direction)
+        if (Modes.maxRange > 1852*180)
+            range_limit = (1852*360) - Modes.maxRange;
+    } else {
+        // No local reference, give up
+        return (-1);
+    }
+
+    result = decodeCPRrelative(reflat, reflon,
+                               fflag ? a->odd_cprlat : a->even_cprlat,
+                               fflag ? a->odd_cprlon : a->even_cprlon,
+                               fflag, surface,
+                               &lat, &lon);
+    if (result < 0)
+        return result;
+    // check range limit
+    if (range_limit > 0) {
+        double range = greatcircle(reflat, reflon, lat, lon);
+        if (range > range_limit)
+            return (-1);
+    }
+
+    // check max range
+    if (Modes.maxRange > 0 && (Modes.bUserFlags & MODES_USER_LATLON_VALID)) {
+        double range = greatcircle(Modes.fUserLat, Modes.fUserLon, lat, lon);
+        if (range > Modes.maxRange)
+            return (-2); // we consider an out-of-range value to be bad data
+    }
+
+    a->lat = lat;
+    a->lon = lon;
+    return 0;
+}
+
+static void updatePosition(struct aircraft *a, struct modesMessage *mm, time_t now)
+{
+    int location_result = -1;
+
+    if (mm->bFlags & MODES_ACFLAGS_LLODD_VALID) {
+        a->odd_cprlat  = mm->raw_latitude;
+        a->odd_cprlon  = mm->raw_longitude;
+        a->odd_cprtime = mstime();
+    } else {
+        a->even_cprlat  = mm->raw_latitude;
+        a->even_cprlon  = mm->raw_longitude;
+        a->even_cprtime = mstime();
+    }
+
+    // If we have enough recent data, try global CPR
+    if (((mm->bFlags | a->bFlags) & MODES_ACFLAGS_LLEITHER_VALID) == MODES_ACFLAGS_LLBOTH_VALID && abs((int)(a->even_cprtime - a->odd_cprtime)) <= 10000) {
+        location_result = doGlobalCPR(a, (mm->bFlags & MODES_ACFLAGS_LLODD_VALID), (mm->bFlags & MODES_ACFLAGS_AOG));
+        if (location_result == -2) {
+            // Global CPR failed because an airborne position produced implausible results.
+            // This is bad data. Discard both odd and even messages and wait for a fresh pair.
+            // Also disable aircraft-relative positions until we have a new good position (but don't discard the
+            // recorded position itself)
+            Modes.stats_current.cpr_global_bad++;
+            mm->bFlags &= ~(MODES_ACFLAGS_LATLON_VALID | MODES_ACFLAGS_LLODD_VALID | MODES_ACFLAGS_LLEVEN_VALID);
+            a->bFlags &= ~(MODES_ACFLAGS_LATLON_REL_OK | MODES_ACFLAGS_LLODD_VALID | MODES_ACFLAGS_LLEVEN_VALID);
+            return;
+        } else if (location_result == -1) {
+            // No local reference for surface position available, or the two messages crossed a zone.
+            // Nonfatal, try again later.
+            Modes.stats_current.cpr_global_skipped++;
+        } else {
+            Modes.stats_current.cpr_global_ok++;
+        }
+    }
+
+    // Otherwise try relative CPR.
+    if (location_result == -1) {
+        location_result = doLocalCPR(a, (mm->bFlags & MODES_ACFLAGS_LLODD_VALID), (mm->bFlags & MODES_ACFLAGS_AOG), now);
+        if (location_result == -1) {
+            Modes.stats_current.cpr_local_skipped++;
+        } else {
+            Modes.stats_current.cpr_local_ok++;
+            mm->bFlags |= MODES_ACFLAGS_REL_CPR_USED;
+        }
+    }
+
+    if (location_result == 0) {
+        // If we sucessfully decoded, back copy the results to mm so that we can print them in list output
+        mm->bFlags |= MODES_ACFLAGS_LATLON_VALID;
+        mm->fLat    = a->lat;
+        mm->fLon    = a->lon;
+
+        // Update aircraft state
+        a->bFlags |= (MODES_ACFLAGS_LATLON_VALID | MODES_ACFLAGS_LATLON_REL_OK);
+        a->seenLatLon      = a->seen;
+        a->timestampLatLon = a->timestamp;
+    }
+}
+
 struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
     struct aircraft *a, *aux;
-
-    // Return if (checking crc) AND (not crcok) AND (not fixed)
-    if (Modes.check_crc && (mm->crcok == 0) && (mm->correctedbits == 0))
-        return NULL;
+    time_t now = time(NULL);
 
     // Lookup our aircraft or create a new one
     a = interactiveFindAircraft(mm->addr);
@@ -197,7 +398,7 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
          * since the aircraft that is currently on head sent a message,
          * othewise with multiple aircrafts at the same time we have an
          * useless shuffle of positions on the screen. */
-        if (0 && Modes.aircrafts != a && (time(NULL) - a->seen) >= 1) {
+        if (0 && Modes.aircrafts != a && (now - a->seen) >= 1) {
             aux = Modes.aircrafts;
             while(aux->next != a) aux = aux->next;
             /* Now we are a node before the aircraft to remove. */
@@ -209,7 +410,7 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
     }
 
     a->signalLevel[a->messages & 7] = mm->signalLevel;// replace the 8th oldest signal strength
-    a->seen      = time(NULL);
+    a->seen      = now;
     a->timestamp = mm->timestampMsg;
     a->messages++;
 
@@ -263,36 +464,7 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
 
     // If we've got a new cprlat or cprlon
     if (mm->bFlags & MODES_ACFLAGS_LLEITHER_VALID) {
-        int location_ok = 0;
-
-        if (mm->bFlags & MODES_ACFLAGS_LLODD_VALID) {
-            a->odd_cprlat  = mm->raw_latitude;
-            a->odd_cprlon  = mm->raw_longitude;
-            a->odd_cprtime = mstime();
-        } else {
-            a->even_cprlat  = mm->raw_latitude;
-            a->even_cprlon  = mm->raw_longitude;
-            a->even_cprtime = mstime();
-        }
-
-        // If we have enough recent data, try global CPR
-        if (((mm->bFlags | a->bFlags) & MODES_ACFLAGS_LLEITHER_VALID) == MODES_ACFLAGS_LLBOTH_VALID && abs((int)(a->even_cprtime - a->odd_cprtime)) <= 10000) {
-            if (decodeCPR(a, (mm->bFlags & MODES_ACFLAGS_LLODD_VALID), (mm->bFlags & MODES_ACFLAGS_AOG)) == 0) {
-                location_ok = 1;
-            }
-        }
-
-        // Otherwise try relative CPR.
-        if (!location_ok && decodeCPRrelative(a, (mm->bFlags & MODES_ACFLAGS_LLODD_VALID), (mm->bFlags & MODES_ACFLAGS_AOG)) == 0) {
-            location_ok = 1;
-        }
-
-        //If we sucessfully decoded, back copy the results to mm so that we can print them in list output
-        if (location_ok) {
-            mm->bFlags |= MODES_ACFLAGS_LATLON_VALID;
-            mm->fLat    = a->lat;
-            mm->fLon    = a->lon;
-        }
+        updatePosition(a, mm, now);
     }
 
     // Update the aircrafts a->bFlags to reflect the newly received mm->bFlags;
@@ -351,10 +523,10 @@ void interactiveShowData(void) {
 
     if (Modes.interactive_rtl1090 == 0) {
         printf (
-"Hex     Mode  Sqwk  Flight   Alt    Spd  Hdg    Lat      Long   Sig  Msgs   Ti%c\n", progress);
+" Hex    Mode  Sqwk  Flight   Alt    Spd  Hdg    Lat      Long   RSSI  Msgs  Ti%c\n", progress);
     } else {
         printf (
-"Hex    Flight   Alt      V/S GS  TT  SSR  G*456^ Msgs    Seen %c\n", progress);
+" Hex   Flight   Alt      V/S GS  TT  SSR  G*456^ Msgs    Seen %c\n", progress);
     }
     printf(
 "-------------------------------------------------------------------------------\n");
@@ -366,7 +538,7 @@ void interactiveShowData(void) {
             int msgs  = a->messages;
             int flags = a->modeACflags;
 
-            if ( (((flags & (MODEAC_MSG_FLAG                             )) == 0                    )                 )
+            if ( (((flags & (MODEAC_MSG_FLAG                             )) == 0                    ) && (msgs > 1  ) )
               || (((flags & (MODEAC_MSG_MODES_HIT | MODEAC_MSG_MODEA_ONLY)) == MODEAC_MSG_MODEA_ONLY) && (msgs > 4  ) ) 
               || (((flags & (MODEAC_MSG_MODES_HIT | MODEAC_MSG_MODEC_OLD )) == 0                    ) && (msgs > 127) ) 
               ) {
@@ -406,9 +578,9 @@ void interactiveShowData(void) {
                     char strMode[5]               = "    ";
                     char strLat[8]                = " ";
                     char strLon[9]                = " ";
-                    unsigned char * pSig       = a->signalLevel;
-                    unsigned int signalAverage = (pSig[0] + pSig[1] + pSig[2] + pSig[3] + 
-                                                  pSig[4] + pSig[5] + pSig[6] + pSig[7] + 3) >> 3; 
+                    double * pSig                 = a->signalLevel;
+                    double signalAverage = (pSig[0] + pSig[1] + pSig[2] + pSig[3] + 
+                                            pSig[4] + pSig[5] + pSig[6] + pSig[7]) / 8.0; 
 
                     if ((flags & MODEAC_MSG_FLAG) == 0) {
                         strMode[0] = 'S';
@@ -429,9 +601,10 @@ void interactiveShowData(void) {
                         snprintf(strFl, 6, "%5d", altitude);
                     }
 
-                    printf("%06X  %-4s  %-4s  %-8s %5s  %3s  %3s  %7s %8s %2d.%1d %5d  %2d\n",
-                    a->addr, strMode, strSquawk, a->flight, strFl, strGs, strTt,
-                    strLat, strLon, signalAverage/5, 2*(signalAverage%5), msgs, (int)(now - a->seen));
+                    printf("%s%06X %-4s  %-4s  %-8s %5s  %3s  %3s  %7s %8s %5.1f %5d %2d\n",
+                           (a->addr & MODES_NON_ICAO_ADDRESS) ? "~" : " ", (a->addr & 0xffffff),
+                           strMode, strSquawk, a->flight, strFl, strGs, strTt,
+                           strLat, strLon, 10 * log10(signalAverage), msgs, (int)(now - a->seen));
                 }
                 count++;
             }

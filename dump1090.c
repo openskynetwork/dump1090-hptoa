@@ -1,32 +1,52 @@
-// dump1090, a Mode S messages decoder for RTLSDR devices.
+// Part of dump1090, a Mode S message decoder for RTLSDR devices.
 //
-// Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
+// dump1090.c: main program & miscellany
 //
-// All rights reserved.
+// Copyright (c) 2014,2015 Oliver Jowett <oliver@mutability.co.uk>
 //
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
+// This file is free software: you may copy, redistribute and/or modify it  
+// under the terms of the GNU General Public License as published by the
+// Free Software Foundation, either version 2 of the License, or (at your  
+// option) any later version.  
 //
-//  *  Redistributions of source code must retain the above copyright
-//     notice, this list of conditions and the following disclaimer.
+// This file is distributed in the hope that it will be useful, but  
+// WITHOUT ANY WARRANTY; without even the implied warranty of  
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU  
+// General Public License for more details.
 //
-//  *  Redistributions in binary form must reproduce the above copyright
-//     notice, this list of conditions and the following disclaimer in the
-//     documentation and/or other materials provided with the distribution.
+// You should have received a copy of the GNU General Public License  
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// This file incorporates work covered by the following copyright and  
+// permission notice:
 //
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//   Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>
 //
+//   All rights reserved.
+//
+//   Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are
+//   met:
+//
+//    *  Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//    *  Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+//   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+//   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+//   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+//   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+//   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+//   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+//   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+//   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+//   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 #include "dump1090.h"
 
 static int verbose_device_search(char *s);
@@ -60,6 +80,22 @@ void sigWinchCallback() {
 #else 
 int getTermRows() { return MODES_INTERACTIVE_ROWS;}
 #endif
+
+static void start_cpu_timing(struct timespec *start_time)
+{
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, start_time);
+}
+
+static void end_cpu_timing(const struct timespec *start_time, struct timespec *add_to)
+{
+    struct timespec end_time;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_time);
+    add_to->tv_sec += (end_time.tv_sec - start_time->tv_sec - 1);
+    add_to->tv_nsec += (1000000000L + end_time.tv_nsec - start_time->tv_nsec);
+    add_to->tv_sec += add_to->tv_nsec / 1000000000L;
+    add_to->tv_nsec = add_to->tv_nsec % 1000000000L;
+}
+
 //
 // =============================== Initialization ===========================
 //
@@ -83,8 +119,6 @@ void modesInitConfig(void) {
     Modes.interactive_rows        = getTermRows();
     Modes.interactive_delete_ttl  = MODES_INTERACTIVE_DELETE_TTL;
     Modes.interactive_display_ttl = MODES_INTERACTIVE_DISPLAY_TTL;
-    Modes.fUserLat                = MODES_USER_LATITUDE_DFLT;
-    Modes.fUserLon                = MODES_USER_LONGITUDE_DFLT;
     Modes.json_interval           = 1;
     Modes.json_location_accuracy  = 1;
     Modes.maxRange                = 1852 * 300; // 300NM default max range
@@ -100,8 +134,7 @@ void modesInit(void) {
 
     // Allocate the various buffers used by Modes
     Modes.trailing_samples = (Modes.oversample ? (MODES_OS_PREAMBLE_SAMPLES + MODES_OS_LONG_MSG_SAMPLES) : (MODES_PREAMBLE_SAMPLES + MODES_LONG_MSG_SAMPLES)) + 16;
-    if ( ((Modes.icao_cache = (uint32_t *) malloc(sizeof(uint32_t) * MODES_ICAO_CACHE_LEN * 2)                  ) == NULL) ||
-         ((Modes.pFileData  = (uint16_t *) malloc(MODES_ASYNC_BUF_SIZE)                                         ) == NULL) ||
+    if ( ((Modes.pFileData  = (uint16_t *) malloc(MODES_ASYNC_BUF_SIZE)                                         ) == NULL) ||
          ((Modes.magnitude  = (uint16_t *) calloc(MODES_ASYNC_BUF_SAMPLES+Modes.trailing_samples, 2)            ) == NULL) ||
          ((Modes.maglut     = (uint16_t *) malloc(sizeof(uint16_t) * 256 * 256)                                 ) == NULL) ||
          ((Modes.log10lut   = (uint16_t *) malloc(sizeof(uint16_t) * 256 * 256)                                 ) == NULL) )
@@ -111,7 +144,6 @@ void modesInit(void) {
     }
 
     // Clear the buffers that have just been allocated, just in-case
-    memset(Modes.icao_cache, 0,   sizeof(uint32_t) * MODES_ICAO_CACHE_LEN * 2);
     memset(Modes.pFileData,127,   MODES_ASYNC_BUF_SIZE);
 
     // Validate the users Lat/Lon home location inputs
@@ -197,7 +229,8 @@ void modesInit(void) {
     }
 
     // Prepare error correction tables
-    modesInitErrorInfo();
+    modesChecksumInit(Modes.nfix_crc);
+    icaoFilterInit();
 }
 //
 // =============================== RTLSDR handling ==========================
@@ -309,11 +342,18 @@ int modesInitRTLSDR(void) {
 //
 // A Mutex is used to avoid races with the decoding thread.
 //
+
+static struct timespec reader_thread_start;
+
 void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
     MODES_NOTUSED(ctx);
 
     // Lock the data buffer variables before accessing them
     pthread_mutex_lock(&Modes.data_mutex);
+
+    if (Modes.exit) {
+        rtlsdr_cancel_async(Modes.dev); // ask our caller to exit
+    }
 
     Modes.iDataIn &= (MODES_ASYNC_BUF_NUMBER-1); // Just incase!!!
 
@@ -337,6 +377,10 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
       Modes.iDataReady = (MODES_ASYNC_BUF_NUMBER-1);   
       Modes.iDataLost++;
     }
+
+    // accumulate CPU while holding the mutex, and restart measurement
+    end_cpu_timing(&reader_thread_start, &Modes.reader_cpu_accumulator);
+    start_cpu_timing(&reader_thread_start);
  
     // Signal to the other thread that new data is ready, and unlock
     pthread_cond_signal(&Modes.data_cond);
@@ -394,6 +438,10 @@ void readDataFromFile(void) {
         Modes.iDataIn    = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataIn + 1);
         Modes.iDataReady = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataIn - Modes.iDataOut);   
 
+        // accumulate CPU while holding the mutex, and restart measurement
+        end_cpu_timing(&reader_thread_start, &Modes.reader_cpu_accumulator);
+        start_cpu_timing(&reader_thread_start);
+
         // Signal to the other thread that new data is ready
         pthread_cond_signal(&Modes.data_cond);
     }
@@ -411,6 +459,8 @@ void readDataFromFile(void) {
 void *readerThreadEntryPoint(void *arg) {
     MODES_NOTUSED(arg);
 
+    start_cpu_timing(&reader_thread_start); // we accumulate in rtlsdrCallback() or readDataFromFile()
+
     if (Modes.filename == NULL) {
         while (!Modes.exit) {
             rtlsdr_read_async(Modes.dev, rtlsdrCallback, NULL,
@@ -420,12 +470,18 @@ void *readerThreadEntryPoint(void *arg) {
             if (!Modes.exit) {
                 fprintf(stderr, "Warning: lost the connection to the RTLSDR device.\n");
                 rtlsdr_close(Modes.dev);
+                Modes.dev = NULL;
 
                 do {
                     sleep(5);
                     fprintf(stderr, "Trying to reconnect to the RTLSDR device..\n");
                 } while (!Modes.exit && modesInitRTLSDR() < 0);
             }
+        }
+
+        if (Modes.dev != NULL) {
+            rtlsdr_close(Modes.dev);
+            Modes.dev = NULL;
         }
     } else {
         readDataFromFile();
@@ -497,6 +553,7 @@ void showHelp(void) {
 "--net-ro-interval <rate> TCP output memory flush rate in seconds (default: 0)\n"
 "--net-heartbeat <rate>   TCP heartbeat rate in seconds (default: 60 sec; 0 to disable)\n"
 "--net-buffer <n>         TCP buffer size 64Kb * (2^n) (default: n=0, 64Kb)\n"
+"--net-verbatim           Do not apply CRC corrections to messages we forward; send unchanged\n"
 "--lat <latitude>         Reference/receiver latitude for surface posn (opt)\n"
 "--lon <longitude>        Reference/receiver longitude for surface posn (opt)\n"
 "--max-range <distance>   Absolute maximum range for position decoding (in nm, default: 300)\n"
@@ -566,110 +623,12 @@ void showCopyright(void) {
 }
 #endif
 
-
-static void display_demod_stats(const char *prefix, struct demod_stats *dstats) {
-    int j;
-
-    printf("%d %sdemodulated with 0 errors\n",                  dstats->demodulated0, prefix);
-    printf("%d %sdemodulated with 1 error\n",                   dstats->demodulated1, prefix);
-    printf("%d %sdemodulated with 2 errors\n",                  dstats->demodulated2, prefix);
-    printf("%d %sdemodulated with > 2 errors\n",                dstats->demodulated3, prefix);
-    printf("%d %swith good crc\n",                              dstats->goodcrc, prefix);
-    for (j = 0; j < MODES_MAX_PHASE_STATS; ++j)
-        if (dstats->goodcrc_byphase[j] > 0)
-            printf("   %d %swith phase offset %d\n",            dstats->goodcrc_byphase[j], prefix, j);
-    printf("%d %swith bad crc\n",                               dstats->badcrc, prefix);
-    printf("%d %serrors corrected\n",                           dstats->fixed, prefix);
-
-    for (j = 0;  j < MODES_MAX_BITERRORS;  j++) {
-        printf("   %d %swith %d bit %s\n", dstats->bit_fix[j], prefix, j+1, (j==0)?"error":"errors");
-    }
+static void display_total_stats(void)
+{
+    struct stats added;
+    add_stats(&Modes.stats_alltime, &Modes.stats_current, &added);
+    display_stats(&added);
 }
-
-static void reset_demod_stats(struct demod_stats *dstats) {
-    int j;
-
-    dstats->demodulated0 = 
-        dstats->demodulated1 =
-        dstats->demodulated2 =
-        dstats->goodcrc =
-        dstats->badcrc =
-        dstats->fixed = 0;
-
-    for (j = 0;  j < MODES_MAX_BITERRORS;  j++) {
-        dstats->bit_fix[j] = 0;
-    }
-
-    for (j = 0;  j < MODES_MAX_PHASE_STATS;  j++) {
-        dstats->goodcrc_byphase[j] = 0;
-    }
-}
-
-static void display_stats(void) {
-    int j;
-    time_t now = time(NULL);
-
-    printf("\n\n");
-    if (Modes.interactive)
-        interactiveShowData();
-
-    printf("Statistics as at %s", ctime(&now));
-
-    printf("%d sample blocks processed\n",                    Modes.stat_blocks_processed);
-    printf("%d sample blocks dropped\n",                      Modes.stat_blocks_dropped);
-
-    if (Modes.stat_blocks_processed > 0) {
-        long cpu_millis = (long)Modes.stat_cputime.tv_sec*1000L + Modes.stat_cputime.tv_nsec/1000000L;
-        long sample_millis = (long) ((uint64_t)Modes.stat_blocks_processed * MODES_ASYNC_BUF_SAMPLES / (Modes.oversample ? 2400 : 2000));
-        printf("%ld ms CPU time used to process %ld ms samples, %.1f%% load\n",
-               cpu_millis, sample_millis, 100.0 * cpu_millis / sample_millis);
-    }
-
-    printf("%d ModeA/C detected\n",                           Modes.stat_ModeAC);
-    printf("%d Mode-S preambles with poor correlation\n",     Modes.stat_preamble_no_correlation);
-    printf("%d Mode-S preambles with noise in the quiet period\n", Modes.stat_preamble_not_quiet);
-    printf("%d valid Mode-S preambles\n",                     Modes.stat_valid_preamble);
-    for (j = 0; j < MODES_MAX_PHASE_STATS; ++j)
-        if (Modes.stat_preamble_phase[j] > 0)
-            printf("   %d with phase offset %d\n",                Modes.stat_preamble_phase[j], j);
-    printf("%d DF-?? fields corrected for length\n",          Modes.stat_DF_Len_Corrected);
-    printf("%d DF-?? fields corrected for type\n",            Modes.stat_DF_Type_Corrected);
-
-    display_demod_stats("", &Modes.stat_demod);
-    if (Modes.phase_enhance) {
-        printf("%d phase enhancement attempts\n",                 Modes.stat_out_of_phase);
-        display_demod_stats("phase enhanced ", &Modes.stat_demod_phasecorrected);
-    }
-
-    printf("%d total usable messages\n",
-           Modes.stat_messages_total);
-
-    fflush(stdout);
-
-    Modes.stat_cputime.tv_sec = 0;
-    Modes.stat_cputime.tv_nsec = 0;
-
-    Modes.stat_blocks_processed =
-        Modes.stat_blocks_dropped = 0;
-
-    Modes.stat_ModeAC =
-        Modes.stat_preamble_no_correlation =
-        Modes.stat_preamble_not_quiet =
-        Modes.stat_valid_preamble =
-        Modes.stat_DF_Len_Corrected =
-        Modes.stat_DF_Type_Corrected = 
-        Modes.stat_out_of_phase = 0;
-
-    Modes.stat_messages_total = 0;
-
-    for (j = 0;  j < MODES_MAX_PHASE_STATS;  j++) {
-        Modes.stat_preamble_phase[j] = 0;
-    }
-
-    reset_demod_stats(&Modes.stat_demod);
-    reset_demod_stats(&Modes.stat_demod_phasecorrected);
-}
-
 
 //
 //=========================================================================
@@ -679,10 +638,13 @@ static void display_stats(void) {
 // from the net, refreshing the screen in interactive mode, and so forth
 //
 void backgroundTasks(void) {
-    static time_t next_stats;
+    static time_t next_stats_display;
+    static time_t next_stats_update;
     static time_t next_json, next_history;
 
     time_t now = time(NULL);
+
+    icaoFilterExpire();
 
     if (Modes.net) {
 	modesNetPeriodicWork();
@@ -698,29 +660,68 @@ void backgroundTasks(void) {
         interactiveShowData();
     }
 
-    if (Modes.stats > 0) {
-        if (now > next_stats) {
-            if (next_stats != 0)
-                display_stats();
-            next_stats = now + Modes.stats;
+    // always update end time so it is current when requests arrive
+    Modes.stats_current.end = now;
+
+    if (now >= next_stats_update) {
+        int i;
+
+        if (next_stats_update == 0) {
+            next_stats_update = now + 60;
+        } else {
+            Modes.stats_latest_1min = (Modes.stats_latest_1min + 1) % 15;
+            Modes.stats_1min[Modes.stats_latest_1min] = Modes.stats_current;
+            
+            add_stats(&Modes.stats_current, &Modes.stats_alltime, &Modes.stats_alltime);
+            add_stats(&Modes.stats_current, &Modes.stats_periodic, &Modes.stats_periodic);
+            
+            reset_stats(&Modes.stats_5min);
+            for (i = 0; i < 5; ++i)
+                add_stats(&Modes.stats_1min[(Modes.stats_latest_1min - i + 15) % 15], &Modes.stats_5min, &Modes.stats_5min);
+            
+            reset_stats(&Modes.stats_15min);
+            for (i = 0; i < 15; ++i)
+                add_stats(&Modes.stats_1min[i], &Modes.stats_15min, &Modes.stats_15min);
+            
+            reset_stats(&Modes.stats_current);
+            Modes.stats_current.start = Modes.stats_current.end = now;
+            
+            if (Modes.json_dir)
+                writeJsonToFile("stats.json", generateStatsJson);
+
+            next_stats_update += 60;
         }
     }
 
-    if ((Modes.json_dir || Modes.net_http_port) && now >= next_json) {
+    if (Modes.stats > 0 && now >= next_stats_display) {
+        if (next_stats_display == 0) {
+            next_stats_display = now + Modes.stats;
+        } else {
+            add_stats(&Modes.stats_periodic, &Modes.stats_current, &Modes.stats_periodic);
+            display_stats(&Modes.stats_periodic);
+            reset_stats(&Modes.stats_periodic);
+
+            next_stats_display += Modes.stats;
+        }
+    }
+
+    if (Modes.json_dir && now >= next_json) {
         writeJsonToFile("aircraft.json", generateAircraftJson);
         next_json = now + Modes.json_interval;
     }
 
     if ((Modes.json_dir || Modes.net_http_port) && now >= next_history) {
-        char filebuf[PATH_MAX];
         int rewrite_receiver_json = (Modes.json_aircraft_history[HISTORY_SIZE-1].content == NULL);
 
         free(Modes.json_aircraft_history[Modes.json_aircraft_history_next].content); // might be NULL, that's OK.
         Modes.json_aircraft_history[Modes.json_aircraft_history_next].content =
             generateAircraftJson("/data/aircraft.json", &Modes.json_aircraft_history[Modes.json_aircraft_history_next].clen);
 
-        snprintf(filebuf, PATH_MAX, "history_%d.json", Modes.json_aircraft_history_next);
-        writeJsonToFile(filebuf, generateHistoryJson);
+        if (Modes.json_dir) {
+            char filebuf[PATH_MAX];
+            snprintf(filebuf, PATH_MAX, "history_%d.json", Modes.json_aircraft_history_next);
+            writeJsonToFile(filebuf, generateHistoryJson);
+        }
 
         Modes.json_aircraft_history_next = (Modes.json_aircraft_history_next+1) % HISTORY_SIZE;
 
@@ -865,6 +866,8 @@ int main(int argc, char **argv) {
             Modes.net_output_sbs_port = atoi(argv[++j]);
         } else if (!strcmp(argv[j],"--net-buffer") && more) {
             Modes.net_sndbuf_size = atoi(argv[++j]);
+        } else if (!strcmp(argv[j],"--net-verbatim")) {
+            Modes.net_verbatim = 1;
         } else if (!strcmp(argv[j],"--onlyaddr")) {
             Modes.onlyaddr = 1;
         } else if (!strcmp(argv[j],"--metric")) {
@@ -982,16 +985,28 @@ int main(int argc, char **argv) {
     }
     if (Modes.net) modesInitNet();
 
-    writeJsonToFile("receiver.json", generateReceiverJson); // once on startup
+    // init stats:
+    Modes.stats_current.start = Modes.stats_current.end = time(NULL);
+
+    // write initial json files so they're not missing
+    writeJsonToFile("receiver.json", generateReceiverJson);
+    writeJsonToFile("stats.json", generateStatsJson);
+    writeJsonToFile("aircraft.json", generateAircraftJson);
 
     // If the user specifies --net-only, just run in order to serve network
     // clients without reading data from the RTL device
     while (Modes.net_only) {
+        struct timespec start_time;
+
         if (Modes.exit) {
-            display_stats();
+            display_total_stats();
             exit(0); // If we exit net_only nothing further in main()
         }
+
+        start_cpu_timing(&start_time);
         backgroundTasks();
+        end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
+
         usleep(100000);
     }
 
@@ -1000,16 +1015,22 @@ int main(int argc, char **argv) {
     pthread_mutex_lock(&Modes.data_mutex);
 
     while (Modes.exit == 0) {
-        struct timespec cpu_start_time, cpu_end_time;
+        struct timespec start_time;
 
         if (Modes.iDataReady == 0) {
             pthread_cond_wait(&Modes.data_cond,&Modes.data_mutex); // This unlocks Modes.data_mutex, and waits for Modes.data_cond 
             continue;                                              // Once (Modes.data_cond) occurs, it locks Modes.data_mutex
         }
 
+        // copy out reader CPU time and reset it
+        add_timespecs(&Modes.reader_cpu_accumulator, &Modes.stats_current.reader_cpu, &Modes.stats_current.reader_cpu);
+        Modes.reader_cpu_accumulator.tv_sec = 0;
+        Modes.reader_cpu_accumulator.tv_nsec = 0;
+
         // Modes.data_mutex is Locked, and (Modes.iDataReady != 0)
         if (Modes.iDataReady) { // Check we have new data, just in case!!
- 
+            start_cpu_timing(&start_time);
+
             Modes.iDataOut &= (MODES_ASYNC_BUF_NUMBER-1); // Just incase
 
             // Translate the next lot of I/Q samples into Modes.magnitude
@@ -1024,7 +1045,7 @@ int main(int argc, char **argv) {
             // If we lost some blocks, correct the timestamp
             if (Modes.iDataLost) {
                 Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES * 6 * Modes.iDataLost);
-                Modes.stat_blocks_dropped += Modes.iDataLost;
+                Modes.stats_current.blocks_dropped += Modes.iDataLost;
                 Modes.iDataLost = 0;
             }
 
@@ -1036,36 +1057,28 @@ int main(int argc, char **argv) {
             // thread can read data while we perform computationally expensive
             // stuff at the same time.
 
-            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_start_time);
-            
             if (Modes.oversample)
-                detectModeS_oversample(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
+                demodulate2400(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
             else
-                detectModeS(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
-
-            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_end_time);
-            Modes.stat_cputime.tv_sec += (cpu_end_time.tv_sec - cpu_start_time.tv_sec);
-            Modes.stat_cputime.tv_nsec += (cpu_end_time.tv_nsec - cpu_start_time.tv_nsec);
-            if (Modes.stat_cputime.tv_nsec < 0) {
-                Modes.stat_cputime.tv_nsec += 1000000000L;
-                Modes.stat_cputime.tv_sec--;
-            } else if (Modes.stat_cputime.tv_nsec > 1000000000L) {
-                Modes.stat_cputime.tv_nsec -= 1000000000L;
-                Modes.stat_cputime.tv_sec++;
-            }
+                demodulate2000(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
 
             // Update the timestamp ready for the next block
             if (Modes.oversample)
                 Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES*5);
             else
                 Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES*6);
-            Modes.stat_blocks_processed++;
+            Modes.stats_current.blocks_processed++;
+
+            end_cpu_timing(&start_time, &Modes.stats_current.demod_cpu);
         } else {
             pthread_cond_signal (&Modes.data_cond);
             pthread_mutex_unlock(&Modes.data_mutex);
         }
 
+        start_cpu_timing(&start_time);
         backgroundTasks();
+        end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
+
         pthread_mutex_lock(&Modes.data_mutex);
     }
 
@@ -1073,22 +1086,10 @@ int main(int argc, char **argv) {
 
     // If --stats were given, print statistics
     if (Modes.stats) {
-        display_stats();
-    }
-
-    if (Modes.filename == NULL) {
-        rtlsdr_cancel_async(Modes.dev);  // Cancel rtlsdr_read_async will cause data input thread to terminate cleanly
+        display_total_stats();
     }
 
     pthread_join(Modes.reader_thread,NULL);     // Wait on reader thread exit
-
-    // Nothing is touching the rtlsdr device now.
-
-    if (Modes.filename == NULL) {
-        // This currently causes crashes within libusb for unknown reasons:
-        //rtlsdr_close(Modes.dev);
-    }
-
     pthread_cond_destroy(&Modes.data_cond);     // Thread cleanup - only after the reader thread is dead!
     pthread_mutex_destroy(&Modes.data_mutex);
 

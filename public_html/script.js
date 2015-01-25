@@ -5,6 +5,7 @@ var GoogleMap     = null;
 var Planes        = {};
 var PlanesOrdered = [];
 var SelectedPlane = null;
+var FollowSelected = false;
 
 var SpecialSquawks = {
         '7500' : { cssClass: 'squawk7500', markerColor: 'rgb(255, 85, 85)', text: 'Aircraft Hijacking' },
@@ -13,10 +14,6 @@ var SpecialSquawks = {
 };
 
 // Get current map settings
-var DefaultCenterLat = CONST_CENTERLAT;
-var DefaultCenterLon = CONST_CENTERLON;
-var DefaultZoomLvl = CONST_ZOOMLVL;
-
 var CenterLat, CenterLon, ZoomLvl;
 
 var Dump1090Version = "unknown version";
@@ -40,6 +37,8 @@ var MessageCountHistory = [];
 
 var NBSP='\u00a0';
 var DEGREES='\u00b0'
+var UP_TRIANGLE='\u25b2'; // U+25B2 BLACK UP-POINTING TRIANGLE
+var DOWN_TRIANGLE='\u25bc'; // U+25BC BLACK DOWN-POINTING TRIANGLE
 
 function processReceiverUpdate(data) {
 	// Loop through all the planes in the data packet
@@ -71,8 +70,16 @@ function processReceiverUpdate(data) {
 		} else {
 			plane = new PlaneObject(hex);
                         plane.tr = PlaneRowTemplate.cloneNode(true);
-                        plane.tr.cells[0].textContent = hex; // this won't change
-                        plane.tr.addEventListener('click', selectPlaneByHex.bind(undefined,hex));
+                        if (hex[0] === '~') {
+                                // Non-ICAO address
+                                plane.tr.cells[0].textContent = hex.substring(1);
+                                $(plane.tr).css('font-style', 'italic');
+                        } else {
+                                plane.tr.cells[0].textContent = hex;
+                        }
+
+                        plane.tr.addEventListener('click', selectPlaneByHex.bind(undefined,hex,false));
+                        plane.tr.addEventListener('dblclick', selectPlaneByHex.bind(undefined,hex,true));
                         
                         Planes[hex] = plane;
                         PlanesOrdered.push(plane);
@@ -134,6 +141,10 @@ function fetchData() {
 
 var PositionHistorySize = 0;
 function initialize() {
+        // Set page basics
+        $("head title").text(PageName);
+        $("#infoblock_name").text(PageName);
+
         PlaneRowTemplate = document.getElementById("plane_row_template");
 
         if (!ShowClocks) {
@@ -404,14 +415,23 @@ function initialize_map() {
 	GoogleMap.mapTypes.set("dark_map", styledMap);
 	
 	// Listeners for newly created Map
-    google.maps.event.addListener(GoogleMap, 'center_changed', function() {
-        localStorage['CenterLat'] = GoogleMap.getCenter().lat();
-        localStorage['CenterLon'] = GoogleMap.getCenter().lng();
-    });
+        google.maps.event.addListener(GoogleMap, 'center_changed', function() {
+                localStorage['CenterLat'] = GoogleMap.getCenter().lat();
+                localStorage['CenterLon'] = GoogleMap.getCenter().lng();
+                if (FollowSelected) {
+                        // On manual navigation, disable follow
+                        var selected = Planes[SelectedPlane];
+                        if (Math.abs(GoogleMap.getCenter().lat() - selected.position.lat()) > 0.0001 &&
+                            Math.abs(GoogleMap.getCenter().lng() - selected.position.lng()) > 0.0001) {
+                                FollowSelected = false;
+                                refreshSelected();
+                        }
+                }
+        });
     
-    google.maps.event.addListener(GoogleMap, 'zoom_changed', function() {
-        localStorage['ZoomLvl']  = GoogleMap.getZoom();
-    }); 
+        google.maps.event.addListener(GoogleMap, 'zoom_changed', function() {
+                localStorage['ZoomLvl']  = GoogleMap.getZoom();
+        });
 	
 	// Add home marker if requested
 	if (SitePosition) {
@@ -424,7 +444,7 @@ function initialize_map() {
           position: SitePosition,
           map: GoogleMap,
           icon: markerImage,
-          title: 'My Radar Site',
+          title: SiteName,
           zIndex: -99999
         });
         
@@ -483,29 +503,47 @@ function format_track_long(track) {
 }
 
 // alt in ft
-function format_altitude_brief(alt) {
+function format_altitude_brief(alt, vr) {
+        var alt_text;
+
         if (alt === null)
                 return "";
         if (alt === "ground")
                 return "ground";
 
         if (Metric)
-                return Math.round(alt / 3.2828);
+                alt_text = Math.round(alt / 3.2828) + NBSP;
         else
-                return Math.round(alt);
+                alt_text = Math.round(alt) + NBSP;
+
+        if (vr > 128)
+                return alt_text + UP_TRIANGLE;
+        else if (vr < -128)
+                return alt_text + DOWN_TRIANGLE;
+        else
+                return alt_text + NBSP;
 }
 
 // alt in ft
-function format_altitude_long(alt) {
+function format_altitude_long(alt, vr) {
+        var alt_text;
+
         if (alt === null)
                 return "n/a";
         if (alt === "ground")
                 return "on ground";
         
         if (Metric)
-                return Math.round(alt / 3.2828) + NBSP + "m / " + Math.round(alt) + NBSP + "ft";
+                alt_text = Math.round(alt / 3.2828) + NBSP + "m / " + Math.round(alt) + NBSP + "ft";
         else
-                return Math.round(alt) + NBSP + "ft / " + Math.round(alt / 3.2828) + NBSP + "m";
+                alt_text = Math.round(alt) + NBSP + "ft / " + Math.round(alt / 3.2828) + NBSP + "m";
+
+        if (vr > 128)
+                return UP_TRIANGLE + NBSP + alt_text;
+        else if (vr < -128)
+                return DOWN_TRIANGLE + NBSP + alt_text;
+        else
+                return alt_text;
 }
 
 // speed in kts
@@ -554,7 +592,7 @@ function format_distance_long(dist) {
 
 // p as a LatLng
 function format_latlng(p) {
-        return p.lat().toFixed(5) + DEGREES + "," + NBSP + p.lng().toFixed(5) + DEGREES;
+        return p.lat().toFixed(3) + DEGREES + "," + NBSP + p.lng().toFixed(3) + DEGREES;
 }
 
 // Refresh the detail window about the plane
@@ -598,7 +636,7 @@ function refreshSelected() {
                 $('#selected_flightstats_link').attr('href','http://www.flightstats.com/go/FlightStatus/flightStatusByFlight.do?flightNumber='+selected.flight);
                 $('#selected_flightaware_link').attr('href','http://flightaware.com/live/flight/'+selected.flight);
         } else {
-                $('#selected_callsign').text('n/a (' + selected.icao + ')');
+                $('#selected_callsign').text('n/a');
                 $('#selected_links').css('display','none');
         }
                 
@@ -610,7 +648,7 @@ function refreshSelected() {
                 emerg.className = 'hidden';
         }
 
-        $("#selected_altitude").text(format_altitude_long(selected.altitude));
+        $("#selected_altitude").text(format_altitude_long(selected.altitude, selected.vert_rate));
 
         if (selected.squawk === null || selected.squawk === '0000') {
                 $('#selected_squawk').text('n/a');
@@ -619,26 +657,36 @@ function refreshSelected() {
         }
 	
         $('#selected_speed').text(format_speed_long(selected.speed));
-        $('#selected_icao').text(selected.icao);
+        $('#selected_icao').text(selected.icao.toUpperCase());
+        $('#airframes_post_icao').attr('value',selected.icao);
 	$('#selected_track').text(format_track_long(selected.track));
 
         if (selected.seen <= 1) {
                 $('#selected_seen').text('now');
         } else {
-                $('#selected_seen').text(selected.seen + 's ago');
+                $('#selected_seen').text(selected.seen + 's');
         }
 
 	if (selected.position === null) {
                 $('#selected_position').text('n/a');
+                $('#selected_follow').addClass('hidden');
         } else {
                 if (selected.seen_pos > 1) {
-                        $('#selected_position').text(format_latlng(selected.position) + " (" + selected.seen_pos + "s ago)");
+                        $('#selected_position').text(format_latlng(selected.position) + " (" + selected.seen_pos + "s)");
                 } else {
                         $('#selected_position').text(format_latlng(selected.position));
+                }
+                $('#selected_follow').removeClass('hidden');
+                if (FollowSelected) {
+                        $('#selected_follow').css('font-weight', 'bold');
+                        GoogleMap.panTo(selected.position);
+                } else {
+                        $('#selected_follow').css('font-weight', 'normal');
                 }
 	}
         
         $('#selected_sitedist').text(format_distance_long(selected.sitedist));
+        $('#selected_rssi').text(selected.rssi.toFixed(1) + ' dBFS');
 }
 
 // Refreshes the larger table of all the planes
@@ -671,7 +719,7 @@ function refreshTableInfo() {
                         // ICAO doesn't change
                         tableplane.tr.cells[1].textContent = (tableplane.flight !== null ? tableplane.flight : "");
                         tableplane.tr.cells[2].textContent = (tableplane.squawk !== null ? tableplane.squawk : "");    	                
-                        tableplane.tr.cells[3].textContent = format_altitude_brief(tableplane.altitude);
+                        tableplane.tr.cells[3].textContent = format_altitude_brief(tableplane.altitude, tableplane.vert_rate);
                         tableplane.tr.cells[4].textContent = format_speed_brief(tableplane.speed);
 
                         if (tableplane.position !== null)
@@ -736,7 +784,7 @@ function sortFunction(x,y) {
 
         // always sort missing values at the end, regardless of
         // ascending/descending sort
-        if (xv == null && yv == null) return 0;
+        if (xv == null && yv == null) return x._sort_pos - y._sort_pos;
         if (xv == null) return 1;
         if (yv == null) return -1;
 
@@ -778,7 +826,7 @@ function sortBy(id,sc,se) {
         resortTable();
 }
 
-function selectPlaneByHex(hex) {
+function selectPlaneByHex(hex,autofollow) {
         //console.log("select: " + hex);
 	// If SelectedPlane has something in it, clear out the selected
 	if (SelectedPlane != null) {
@@ -804,6 +852,21 @@ function selectPlaneByHex(hex) {
 		SelectedPlane = null;
 	}
 
+        if (SelectedPlane !== null && autofollow) {
+                FollowSelected = true;
+                if (GoogleMap.getZoom() < 8)
+                        GoogleMap.setZoom(8);
+        } else {
+                FollowSelected = false;
+        } 
+
+        refreshSelected();
+}
+
+function toggleFollowSelected() {
+        FollowSelected = !FollowSelected;
+        if (FollowSelected && GoogleMap.getZoom() < 8)
+                GoogleMap.setZoom(8);
         refreshSelected();
 }
 
@@ -817,7 +880,7 @@ function resetMap() {
 	GoogleMap.setZoom(ZoomLvl);
 	GoogleMap.setCenter(new google.maps.LatLng(CenterLat, CenterLon));
 	
-	selectPlaneByHex(null);
+	selectPlaneByHex(null,false);
 }
 
 function drawCircle(marker, distance) {
