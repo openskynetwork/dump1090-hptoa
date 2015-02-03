@@ -122,6 +122,8 @@ void modesInitConfig(void) {
     Modes.json_interval           = 1;
     Modes.json_location_accuracy  = 1;
     Modes.maxRange                = 1852 * 300; // 300NM default max range
+    Modes.gain_change_requested   = -1;
+    
 }
 //
 //=========================================================================
@@ -351,7 +353,7 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
     // Lock the data buffer variables before accessing them
     pthread_mutex_lock(&Modes.data_mutex);
 
-    if (Modes.exit) {
+    if (Modes.exit || Modes.gain_change_requested >= 0) {
         rtlsdr_cancel_async(Modes.dev); // ask our caller to exit
     }
 
@@ -459,6 +461,8 @@ void readDataFromFile(void) {
 void *readerThreadEntryPoint(void *arg) {
     MODES_NOTUSED(arg);
 
+    printf("reader thread starts..\n");
+
     start_cpu_timing(&reader_thread_start); // we accumulate in rtlsdrCallback() or readDataFromFile()
 
     if (Modes.filename == NULL) {
@@ -466,6 +470,17 @@ void *readerThreadEntryPoint(void *arg) {
             rtlsdr_read_async(Modes.dev, rtlsdrCallback, NULL,
                               MODES_ASYNC_BUF_NUMBER,
                               MODES_ASYNC_BUF_SIZE);
+
+            pthread_mutex_lock(&Modes.data_mutex);
+            if (Modes.gain_change_requested >= 0) {
+                //printf("applying gain change..\n");
+                rtlsdr_set_tuner_gain(Modes.dev, Modes.gain_change_requested);
+                //printf("got it..\n");
+                Modes.gain_change_requested = -1;
+                Modes.gain_change_completed = 1;
+                pthread_mutex_unlock(&Modes.data_mutex);
+                continue;
+            }
 
             if (!Modes.exit) {
                 fprintf(stderr, "Warning: lost the connection to the RTLSDR device.\n");
@@ -575,6 +590,7 @@ void showHelp(void) {
 "--write-json <dir>       Periodically write json output to <dir> (for serving by a separate webserver)\n"
 "--write-json-every <t>   Write json output every t seconds (default 1)\n"
 "--json-location-accuracy <n>  Accuracy of receiver location in json metadata: 0=no location, 1=approximate, 2=exact\n"
+"--scan-gain              Measure the reception rate across different gains\n"
 "--help                   Show this help\n"
 "\n"
 "Debug mode flags: d = Log frames decoded with errors\n"
@@ -794,11 +810,166 @@ int verbose_device_search(char *s)
 	fprintf(stderr, "No matching devices found.\n");
 	return -1;
 }
+
+void scan_gains() {
+    // Gain scanning:
+    int gain_changing = 0;
+    int *all_gains = NULL;
+    int numgains = 0;
+    int gain_index = 0;
+    int next_valid_buffer = -1;
+    time_t next_gain_change = 0;
+    time_t next_display = 0;
+    struct stats *gain_stats = NULL;
+
+    numgains = rtlsdr_get_tuner_gains(Modes.dev, NULL);
+    if (numgains <= 0) {
+        fprintf(stderr, "Error getting tuner gains\n");
+        Modes.exit = 1;
+        return;
+    }
+    
+    all_gains = calloc(numgains, sizeof(int));
+    gain_stats = calloc(numgains, sizeof(struct stats));
+    if (rtlsdr_get_tuner_gains(Modes.dev, all_gains) != numgains) {
+        fprintf(stderr, "Error getting tuner gains\n");
+        free(all_gains);
+        free(gain_stats);
+        Modes.exit = 1;
+        return;
+    }
+
+    for (gain_index = 0; gain_index < numgains; ++gain_index) {
+        reset_stats(&gain_stats[gain_index]);
+    }
+
+    gain_index = 0;
+    Modes.gain_change_requested = all_gains[0];
+    Modes.gain_change_completed = 0;
+    gain_changing = 1;
+    next_gain_change = time(NULL) + 1;
+
+    while (!Modes.exit) {
+        time_t now = time(NULL);
+        int i;
+
+        if (!gain_changing && now >= next_gain_change) {
+            gain_index = (gain_index+1) % numgains;
+            next_gain_change = now + 1;
+            Modes.gain_change_completed = 0;
+            Modes.gain_change_requested = all_gains[gain_index];
+            gain_changing = 1;
+            //printf("request gain change to %.1f\n", Modes.gain_change_requested/10.0);
+        }
+            
+        if (gain_changing == 1 && Modes.gain_change_completed) {
+            //printf("gain change done\n");
+            next_valid_buffer = (Modes.iDataOut+1) % MODES_ASYNC_BUF_NUMBER;
+            gain_changing = 2;
+        }
+
+        if (Modes.iDataReady == 0) {
+            pthread_cond_wait(&Modes.data_cond,&Modes.data_mutex); // This unlocks Modes.data_mutex, and waits for Modes.data_cond 
+            continue;                                              // Once (Modes.data_cond) occurs, it locks Modes.data_mutex
+        }
+
+        // Modes.data_mutex is Locked, and (Modes.iDataReady != 0)
+        if (Modes.iDataReady) { // Check we have new data, just in case!!
+            Modes.iDataOut &= (MODES_ASYNC_BUF_NUMBER-1); // Just incase
+
+            // Translate the next lot of I/Q samples into Modes.magnitude
+            computeMagnitudeVector(Modes.pData[Modes.iDataOut]);
+
+            if (gain_changing == 2 && Modes.iDataOut == next_valid_buffer) {
+                //printf("gain change now has valid data\n");
+                gain_changing = 0;
+            }
+
+            // Update the input buffer pointer queue
+            Modes.iDataOut   = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataOut + 1); 
+            Modes.iDataReady = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataIn - Modes.iDataOut);   
+
+            // It's safe to release the lock now
+            pthread_cond_signal (&Modes.data_cond);
+            pthread_mutex_unlock(&Modes.data_mutex);
+
+            // Process data after releasing the lock, so that the capturing
+            // thread can read data while we perform computationally expensive
+            // stuff at the same time.
+
+            if (Modes.oversample)
+                demodulate2400(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
+            else
+                demodulate2000(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
+
+            Modes.stats_current.blocks_processed++;
+        } else {
+            pthread_cond_signal (&Modes.data_cond);
+            pthread_mutex_unlock(&Modes.data_mutex);
+        }
+    
+        if (!gain_changing) {
+            add_stats(&Modes.stats_current, &gain_stats[gain_index], &gain_stats[gain_index]);
+        }
+
+        reset_stats(&Modes.stats_current);
+
+        now = time(NULL);
+        if (now >= next_display) {
+            next_display = now + 1;
+
+            printf("\x1b[H\x1b[2J");    // Clear the screen
+            printf("Gain  Time  Msgs      Signal      Message rate\n"
+                   "                   Mean   Peak    All    >-3dB\n"
+                   "----  ----  -----  -----  -----  ------  -----\n");
+            
+            for (i = 0; i < numgains; ++i) {
+                int j;
+                double elapsed;
+                uint32_t total_messages = 0;
+                double message_rate, strong_rate;
+                double peak_power, mean_power;
+                
+                for (j = 0; j < MODES_MAX_BITERRORS+1; ++j)
+                    total_messages += gain_stats[i].demod_accepted[j];
+                
+                elapsed = 1.0 * gain_stats[i].blocks_processed * MODES_ASYNC_BUF_SAMPLES / (Modes.oversample ? 2400000.0 : 2000000.0);
+                if (elapsed == 0 || total_messages == 0) {
+                    message_rate = 0;
+                    strong_rate = 0;
+                    peak_power = 0;
+                    mean_power = 0;
+                } else {
+                    message_rate = total_messages / elapsed;
+                    strong_rate = gain_stats[i].strong_signal_count / elapsed;                    
+                    peak_power = 10 * log10(gain_stats[i].peak_signal_power);
+                    mean_power = 10 * log10(gain_stats[i].signal_power_sum / gain_stats[i].signal_power_count);
+                }
+                
+                printf("%4.1f%s %4.0f  %5u  %5.1f  %5.1f  %6.1f  %5.1f\n",
+                       all_gains[i]/10.0,
+                       i == gain_index ? "*" : " ",
+                       elapsed, total_messages, mean_power, peak_power, message_rate, strong_rate);
+            }
+
+            fflush(stdout);
+        }
+                                      
+        backgroundTasks();
+        
+        pthread_mutex_lock(&Modes.data_mutex);
+    }
+    
+    Modes.stats = 0;
+    pthread_mutex_unlock(&Modes.data_mutex);
+}
+
 //
 //=========================================================================
 //
 int main(int argc, char **argv) {
     int j;
+    int scanning = 0;
 
     // Set sane defaults
     modesInitConfig();
@@ -935,6 +1106,8 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j], "--json-location-accuracy") && more) {
             Modes.json_location_accuracy = atoi(argv[++j]);
 #endif
+        } else if (!strcmp(argv[j], "--scan-gain")) {
+            scanning = 1;
         } else {
             fprintf(stderr,
                 "Unknown or not enough arguments for option '%s'.\n\n",
@@ -942,6 +1115,16 @@ int main(int argc, char **argv) {
             showHelp();
             exit(1);
         }
+    }
+
+    if (scanning) {
+        // This overrides all the other mode settings.
+        Modes.quiet = 1;
+        Modes.interactive = 0;
+        Modes.net = 0;
+        Modes.enable_agc = 0;
+        Modes.gain = 0;
+        Modes.stats = -1;
     }
 
 #ifdef _WIN32
@@ -1011,8 +1194,12 @@ int main(int argc, char **argv) {
     }
 
     // Create the thread that will read the data from the device.
-    pthread_create(&Modes.reader_thread, NULL, readerThreadEntryPoint, NULL);
     pthread_mutex_lock(&Modes.data_mutex);
+    pthread_create(&Modes.reader_thread, NULL, readerThreadEntryPoint, NULL);
+
+    if (scanning) {
+        scan_gains();
+    }
 
     while (Modes.exit == 0) {
         struct timespec start_time;

@@ -289,6 +289,8 @@ struct {                             // Internal state
     int             iDataOut;        // Fifo output pointer
     int             iDataReady;      // Fifo content count
     int             iDataLost;       // Count of missed buffers
+    int             gain_change_requested;
+    int             gain_change_completed;
     struct timespec reader_cpu_accumulator; // CPU time used by the reader thread, copied out and reset by the main thread under the mutex
 
     int             trailing_samples;// extra trailing samples in magnitude buffer
