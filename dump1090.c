@@ -866,7 +866,7 @@ void scan_gains() {
             
         if (gain_changing == 1 && Modes.gain_change_completed) {
             //printf("gain change done\n");
-            next_valid_buffer = (Modes.iDataOut+1) % MODES_ASYNC_BUF_NUMBER;
+            next_valid_buffer = (Modes.iDataIn+1) % MODES_ASYNC_BUF_NUMBER;
             gain_changing = 2;
         }
 
