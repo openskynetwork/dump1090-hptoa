@@ -482,6 +482,8 @@ void *readerThreadEntryPoint(void *arg) {
                 continue;
             }
 
+            pthread_mutex_unlock(&Modes.data_mutex);
+
             if (!Modes.exit) {
                 fprintf(stderr, "Warning: lost the connection to the RTLSDR device.\n");
                 rtlsdr_close(Modes.dev);
