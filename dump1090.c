@@ -921,9 +921,9 @@ void scan_gains() {
             next_display = now + 1;
 
             printf("\x1b[H\x1b[2J");    // Clear the screen
-            printf("Gain  Time  Msgs      Signal      Message rate\n"
-                   "                   Mean   Peak    All    >-3dB\n"
-                   "----  ----  -----  -----  -----  ------  -----\n");
+            printf("Gain  Time   Msgs      Signal      Message rate\n"
+                   "                    Mean   Peak    All    >-3dB\n"
+                   "----  -----  -----  -----  -----  ------  -----\n");
             
             for (i = 0; i < numgains; ++i) {
                 int j;
@@ -948,7 +948,7 @@ void scan_gains() {
                     mean_power = 10 * log10(gain_stats[i].signal_power_sum / gain_stats[i].signal_power_count);
                 }
                 
-                printf("%4.1f%s %4.0f  %5u  %5.1f  %5.1f  %6.1f  %5.1f\n",
+                printf("%4.1f%s %5.1f  %5u  %5.1f  %5.1f  %6.1f  %5.1f\n",
                        all_gains[i]/10.0,
                        i == gain_index ? "*" : " ",
                        elapsed, total_messages, mean_power, peak_power, message_rate, strong_rate);
