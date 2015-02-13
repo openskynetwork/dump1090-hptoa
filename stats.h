@@ -71,6 +71,10 @@ struct stats {
     struct timespec reader_cpu;
     struct timespec background_cpu;
 
+    // total power:
+    double total_power_sum;
+    uint32_t total_power_count;
+
     // noise floor:
     double noise_power_sum;
     uint32_t noise_power_count;

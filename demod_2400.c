@@ -23,7 +23,7 @@
 // Measuring the noise power is actually surprisingly expensive on an ARM -
 // it increases the CPU use of the demodulator by 1/3. So it's off by default.
 // You can turn it back on here:
-#undef MEASURE_NOISE
+#define MEASURE_NOISE
 
 // 2.4MHz sampling rate version
 //
@@ -170,6 +170,10 @@ void demodulate2400(uint16_t *m, uint32_t mlen) {
     // noise floor:
     uint32_t noise_power_count = 0;
     uint64_t noise_power_sum = 0;
+
+    // total power:
+    uint32_t total_power_count = 0;
+    uint64_t total_power_sum = 0;
 #endif
 
     memset(&mm, 0, sizeof(mm));
@@ -486,6 +490,15 @@ void demodulate2400(uint16_t *m, uint32_t mlen) {
 #ifdef MEASURE_NOISE
     Modes.stats_current.noise_power_sum += (noise_power_sum / MAX_POWER / noise_power_count);
     Modes.stats_current.noise_power_count ++;
+
+    for (j = 0; j < mlen; j++) {
+        uint64_t s = TRUE_AMPLITUDE(m[j]);
+        total_power_sum += s * s;
+        total_power_count++;
+    }
+
+    Modes.stats_current.total_power_sum += (total_power_sum / MAX_POWER / total_power_count);
+    Modes.stats_current.total_power_count ++;
 #endif
 }
 

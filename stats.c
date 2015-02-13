@@ -99,6 +99,11 @@ void display_stats(struct stats *st) {
         printf("  %.1f dBFS peak signal power\n",
                10 * log10(st->peak_signal_power));
 
+        if (st->total_power_count) {
+            printf("  %.1f dBFS total RF power\n",
+                   10 * log10(st->total_power_sum / st->total_power_count));
+        }
+
         printf("  %u messages with signal power above -3dBFS\n",
                st->strong_signal_count);
     }
@@ -191,6 +196,10 @@ void add_stats(const struct stats *st1, const struct stats *st2, struct stats *t
     // mean signal power:
     target->signal_power_sum = st1->signal_power_sum + st2->signal_power_sum;
     target->signal_power_count = st1->signal_power_count + st2->signal_power_count;
+
+    // total power:
+    target->total_power_sum = st1->total_power_sum + st2->total_power_sum;
+    target->total_power_count = st1->total_power_count + st2->total_power_count;
 
     // peak signal power seen
     if (st1->peak_signal_power > st2->peak_signal_power)
