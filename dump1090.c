@@ -122,7 +122,6 @@ void modesInitConfig(void) {
     Modes.json_interval           = 1;
     Modes.json_location_accuracy  = 1;
     Modes.maxRange                = 1852 * 300; // 300NM default max range
-    Modes.gain_change_requested   = -1;
     
 }
 //
@@ -353,7 +352,7 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
     // Lock the data buffer variables before accessing them
     pthread_mutex_lock(&Modes.data_mutex);
 
-    if (Modes.exit || Modes.gain_change_requested >= 0) {
+    if (Modes.exit) {
         rtlsdr_cancel_async(Modes.dev); // ask our caller to exit
     }
 
@@ -395,7 +394,6 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
 // instead of using an RTLSDR device
 //
 void readDataFromFile(void) {
-    pthread_mutex_lock(&Modes.data_mutex);
     while(Modes.exit == 0) {
         ssize_t nread, toread;
         unsigned char *p;
@@ -420,7 +418,7 @@ void readDataFromFile(void) {
             if (nread <= 0) {
                 // Done.
                 Modes.exit = 1; // Signal the other threads to exit.
-                goto OUT;
+                return;
             }
             p += nread;
             toread -= nread;
@@ -447,9 +445,6 @@ void readDataFromFile(void) {
         // Signal to the other thread that new data is ready
         pthread_cond_signal(&Modes.data_cond);
     }
-
- OUT: 
-    pthread_mutex_unlock(&Modes.data_mutex);
 }
 //
 //=========================================================================
@@ -466,23 +461,13 @@ void *readerThreadEntryPoint(void *arg) {
     start_cpu_timing(&reader_thread_start); // we accumulate in rtlsdrCallback() or readDataFromFile()
 
     if (Modes.filename == NULL) {
+        pthread_mutex_lock(&Modes.data_mutex);
         while (!Modes.exit) {
+            pthread_mutex_unlock(&Modes.data_mutex);
             rtlsdr_read_async(Modes.dev, rtlsdrCallback, NULL,
                               MODES_ASYNC_BUF_NUMBER,
                               MODES_ASYNC_BUF_SIZE);
-
             pthread_mutex_lock(&Modes.data_mutex);
-            if (Modes.gain_change_requested >= 0) {
-                //printf("applying gain change..\n");
-                rtlsdr_set_tuner_gain(Modes.dev, Modes.gain_change_requested);
-                //printf("got it..\n");
-                Modes.gain_change_requested = -1;
-                Modes.gain_change_completed = 1;
-                pthread_mutex_unlock(&Modes.data_mutex);
-                continue;
-            }
-
-            pthread_mutex_unlock(&Modes.data_mutex);
 
             if (!Modes.exit) {
                 fprintf(stderr, "Warning: lost the connection to the RTLSDR device.\n");
@@ -490,7 +475,9 @@ void *readerThreadEntryPoint(void *arg) {
                 Modes.dev = NULL;
 
                 do {
+                    pthread_mutex_unlock(&Modes.data_mutex);
                     sleep(5);
+                    pthread_mutex_lock(&Modes.data_mutex);
                     fprintf(stderr, "Trying to reconnect to the RTLSDR device..\n");
                 } while (!Modes.exit && modesInitRTLSDR() < 0);
             }
@@ -505,7 +492,6 @@ void *readerThreadEntryPoint(void *arg) {
     }
 
     // Wake the main thread (if it's still waiting)
-    pthread_mutex_lock(&Modes.data_mutex);
     Modes.exit = 1; // just in case
     pthread_cond_signal(&Modes.data_cond);
     pthread_mutex_unlock(&Modes.data_mutex);
@@ -813,6 +799,19 @@ int verbose_device_search(char *s)
 	return -1;
 }
 
+static uint64_t mstime(void)
+{
+    struct timeval tv;
+    uint64_t mst;
+
+    gettimeofday(&tv, NULL);
+    mst = ((uint64_t)tv.tv_sec)*1000;
+    mst += tv.tv_usec/1000;
+    return mst;
+}
+
+#define TUNER_GAIN_MODE 3
+
 void scan_gains() {
     // Gain scanning:
     int gain_changing = 0;
@@ -820,10 +819,14 @@ void scan_gains() {
     int numgains = 0;
     int gain_index = 0;
     int next_valid_buffer = -1;
-    time_t next_gain_change = 0;
-    time_t next_display = 0;
+    uint64_t next_gain_change = 0;
+    uint64_t next_display = 0;
     struct stats *gain_stats = NULL;
 
+#ifdef TUNER_GAIN_MODE
+    int i;
+
+    rtlsdr_set_tuner_gain_mode(Modes.dev, TUNER_GAIN_MODE);
     numgains = rtlsdr_get_tuner_gains(Modes.dev, NULL);
     if (numgains <= 0) {
         fprintf(stderr, "Error getting tuner gains\n");
@@ -831,8 +834,8 @@ void scan_gains() {
         return;
     }
     
-    all_gains = calloc(numgains, sizeof(int));
-    gain_stats = calloc(numgains, sizeof(struct stats));
+    all_gains = calloc(numgains + 10, sizeof(int));
+    gain_stats = calloc(numgains + 10, sizeof(struct stats));
     if (rtlsdr_get_tuner_gains(Modes.dev, all_gains) != numgains) {
         fprintf(stderr, "Error getting tuner gains\n");
         free(all_gains);
@@ -841,33 +844,57 @@ void scan_gains() {
         return;
     }
 
+    for (i = 0; i < numgains; ++i)
+        all_gains[i] += TUNER_GAIN_MODE*100000+10000;
+
+    //--numgains;
+    all_gains[numgains++] = 110000 + 496;  // Manual mode, 49.6dB
+    all_gains[numgains++] = 0;        // AGC mode
+
+#else
+    all_gains = calloc(20, sizeof(int));
+    gain_stats = calloc(20, sizeof(struct stats));
+    numgains = 0;
+
+    all_gains[numgains++] = 0;  // AGC
+    all_gains[numgains++] = 110000 + 480;  // Manual 48.0dB
+    all_gains[numgains++] = 110000 + 483;  // Manual 48.3dB
+    all_gains[numgains++] = 110000 + 496;  // Manual 49.6dB
+    all_gains[numgains++] = 210000 + 504;  // Linearity, 50.4dB
+    all_gains[numgains++] = 210000 + 547;  // Linearity, 54.7dB
+    all_gains[numgains++] = 210000 + 632;  // Linearity, 63.2dB
+    all_gains[numgains++] = 310000 + 541;  // Sensitivity, 54.1dB
+    all_gains[numgains++] = 310000 + 576;  // Sensitivity, 57.6dB
+    all_gains[numgains++] = 310000 + 624;  // Sensitivity, 62.4dB
+#endif
+
     for (gain_index = 0; gain_index < numgains; ++gain_index) {
         reset_stats(&gain_stats[gain_index]);
     }
 
-    gain_index = 0;
-    Modes.gain_change_requested = all_gains[0];
-    Modes.gain_change_completed = 0;
-    gain_changing = 1;
-    next_gain_change = time(NULL) + 1;
+    gain_changing = 0;
+    gain_index = 0; 
+    next_gain_change = 0;
 
     while (!Modes.exit) {
-        time_t now = time(NULL);
+        uint64_t now = mstime();
         int i;
 
         if (!gain_changing && now >= next_gain_change) {
+            int mode, gain;
+
             gain_index = (gain_index+1) % numgains;
-            next_gain_change = now + 1;
-            Modes.gain_change_completed = 0;
-            Modes.gain_change_requested = all_gains[gain_index];
+            next_gain_change = now + 750;
+
+            mode = all_gains[gain_index]/100000;
+            gain = all_gains[gain_index]%100000-10000;
+
+            rtlsdr_set_tuner_gain_mode(Modes.dev, mode);
+            if (mode != 0) /* work around stock code weirdness */
+                rtlsdr_set_tuner_gain(Modes.dev, gain);
+
+            next_valid_buffer = (Modes.iDataIn+2) % MODES_ASYNC_BUF_NUMBER;
             gain_changing = 1;
-            //printf("request gain change to %.1f\n", Modes.gain_change_requested/10.0);
-        }
-            
-        if (gain_changing == 1 && Modes.gain_change_completed) {
-            //printf("gain change done\n");
-            next_valid_buffer = (Modes.iDataIn+1) % MODES_ASYNC_BUF_NUMBER;
-            gain_changing = 2;
         }
 
         if (Modes.iDataReady == 0) {
@@ -882,7 +909,7 @@ void scan_gains() {
             // Translate the next lot of I/Q samples into Modes.magnitude
             computeMagnitudeVector(Modes.pData[Modes.iDataOut]);
 
-            if (gain_changing == 2 && Modes.iDataOut == next_valid_buffer) {
+            if (gain_changing == 1 && Modes.iDataOut == next_valid_buffer) {
                 //printf("gain change now has valid data\n");
                 gain_changing = 0;
             }
@@ -916,21 +943,21 @@ void scan_gains() {
 
         reset_stats(&Modes.stats_current);
 
-        now = time(NULL);
+        now = mstime();
         if (now >= next_display) {
-            next_display = now + 1;
+            next_display = now + 250;
 
             printf("\x1b[H\x1b[2J");    // Clear the screen
-            printf("Gain  Time   Msgs      Signal      Message rate\n"
-                   "                    Mean   Peak    All    >-3dB\n"
-                   "----  -----  -----  -----  -----  ------  -----\n");
+            printf("  Gain  Time   Msgs   ========= Power ==========   Message rate\n"
+                   "                      Mean   Peak   Noise  Total   All    >-3dB\n"
+                   "------  -----  -----  -----  -----  -----  -----  ------  -----\n");
             
             for (i = 0; i < numgains; ++i) {
                 int j;
                 double elapsed;
                 uint32_t total_messages = 0;
                 double message_rate, strong_rate;
-                double peak_power, mean_power;
+                double peak_power, mean_power, noise_power, total_power;
                 
                 for (j = 0; j < MODES_MAX_BITERRORS+1; ++j)
                     total_messages += gain_stats[i].demod_accepted[j];
@@ -939,19 +966,43 @@ void scan_gains() {
                 if (elapsed == 0 || total_messages == 0) {
                     message_rate = 0;
                     strong_rate = 0;
-                    peak_power = 0;
-                    mean_power = 0;
                 } else {
                     message_rate = total_messages / elapsed;
                     strong_rate = gain_stats[i].strong_signal_count / elapsed;                    
+                }
+
+                if (gain_stats[i].peak_signal_power == 0) {
+                    peak_power = 0;
+                } else {
                     peak_power = 10 * log10(gain_stats[i].peak_signal_power);
+                }
+
+                if (gain_stats[i].signal_power_count == 0) {
+                    mean_power = 0;
+                } else {
                     mean_power = 10 * log10(gain_stats[i].signal_power_sum / gain_stats[i].signal_power_count);
                 }
                 
-                printf("%4.1f%s %5.1f  %5u  %5.1f  %5.1f  %6.1f  %5.1f\n",
-                       all_gains[i]/10.0,
+                if (gain_stats[i].noise_power_count == 0) {
+                    noise_power = 0;
+                } else {
+                    noise_power = 10 * log10(gain_stats[i].noise_power_sum / gain_stats[i].noise_power_count);
+                }
+
+                if (gain_stats[i].total_power_count == 0) {
+                    total_power = 0;
+                } else {
+                    total_power = 10 * log10(gain_stats[i].total_power_sum / gain_stats[i].total_power_count);
+                }
+
+                if (all_gains[i] == 0)
+                    printf("0/AGC ");
+                else
+		    printf("%d/%4.1f", all_gains[i]/100000, (all_gains[i]%100000-10000)/10.0);
+
+                printf("%s %5.1f  %5u  %5.1f  %5.1f  %5.1f  %5.1f  %6.1f  %5.1f\n",
                        i == gain_index ? "*" : " ",
-                       elapsed, total_messages, mean_power, peak_power, message_rate, strong_rate);
+                       elapsed, total_messages, mean_power, peak_power, noise_power, total_power, message_rate, strong_rate);
             }
 
             fflush(stdout);
