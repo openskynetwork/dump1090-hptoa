@@ -70,7 +70,6 @@ void view1090InitConfig(void) {
     strcpy(View1090.net_input_beast_ipaddr,VIEW1090_NET_OUTPUT_IP_ADDRESS); 
     Modes.net_input_beast_port    = MODES_NET_OUTPUT_BEAST_PORT;
     Modes.interactive_rows        = getTermRows();
-    Modes.interactive_delete_ttl  = MODES_INTERACTIVE_DELETE_TTL;
     Modes.interactive_display_ttl = MODES_INTERACTIVE_DISPLAY_TTL;
 
     Modes.interactive             = 1;
@@ -172,40 +171,6 @@ void showHelp(void) {
     );
 }
 
-#ifdef _WIN32
-void showCopyright(void) {
-    uint64_t llTime = time(NULL) + 1;
-
-    printf(
-"-----------------------------------------------------------------------------\n"
-"|                        view1090 ModeS Viewer           Ver : " MODES_DUMP1090_VERSION " |\n"
-"-----------------------------------------------------------------------------\n"
-"\n"
-" Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>\n"
-" Copyright (C) 2014 by Malcolm Robb <support@attavionics.com>\n"
-"\n"
-" All rights reserved.\n"
-"\n"
-" THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n"
-" ""AS IS"" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n"
-" LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\n"
-" A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\n"
-" HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\n"
-" SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\n"
-" LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\n"
-" DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\n"
-" THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n"
-" (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\n"
-" OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n"
-"\n"
-" For further details refer to <https://github.com/MalcolmRobb/dump1090>\n" 
-"\n"
-    );
-
-  // delay for 1 second to give the user a chance to read the copyright
-  while (llTime >= time(NULL)) {}
-}
-#endif
 //
 //=========================================================================
 //
@@ -234,7 +199,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j],"--interactive")) {
             Modes.interactive = 1;
         } else if (!strcmp(argv[j],"--interactive-ttl") && more) {
-            Modes.interactive_display_ttl = atoi(argv[++j]);
+            Modes.interactive_display_ttl = (uint64_t)(1000 * atof(argv[++j]));
         } else if (!strcmp(argv[j],"--interactive-rtl1090")) {
             Modes.interactive = 1;
             Modes.interactive_rtl1090 = 1;
@@ -286,7 +251,7 @@ int main(int argc, char **argv) {
     // Keep going till the user does something that stops us
     while (!Modes.exit) {
         icaoFilterExpire();
-        interactiveRemoveStaleAircrafts();
+        trackPeriodicUpdate();
         interactiveShowData();
         if ((fd == ANET_ERR) || (recv(c->fd, pk_buf, sizeof(pk_buf), MSG_PEEK | MSG_DONTWAIT) == 0)) {
 			free(c);

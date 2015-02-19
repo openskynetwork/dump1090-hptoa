@@ -59,6 +59,7 @@ void add_timespecs(const struct timespec *x, const struct timespec *y, struct ti
 
 void display_stats(struct stats *st) {
     int j;
+    time_t tt_start, tt_end;
     struct tm tm_start, tm_end;
     char tb_start[30], tb_end[30];
 
@@ -66,10 +67,12 @@ void display_stats(struct stats *st) {
     if (Modes.interactive)
         interactiveShowData();
 
-    localtime_r(&st->start, &tm_start);
-    strftime(tb_start, sizeof(tb_start), "%c", &tm_start);
-    localtime_r(&st->end, &tm_end);
-    strftime(tb_end, sizeof(tb_end), "%c", &tm_end);
+    tt_start = st->start/1000;
+    localtime_r(&tt_start, &tm_start);
+    strftime(tb_start, sizeof(tb_start), "%c %Z", &tm_start);
+    tt_end = st->end/1000;
+    localtime_r(&tt_end, &tm_end);
+    strftime(tb_end, sizeof(tb_end), "%c %Z", &tm_end);
 
     printf("Statistics: %s - %s\n", tb_start, tb_end);
 
@@ -96,8 +99,10 @@ void display_stats(struct stats *st) {
                    10 * log10(st->signal_power_sum / st->signal_power_count));
         }
 
-        printf("  %.1f dBFS peak signal power\n",
-               10 * log10(st->peak_signal_power));
+        if (st->peak_signal_power) {
+            printf("  %.1f dBFS peak signal power\n",
+                   10 * log10(st->peak_signal_power));
+        }
 
         printf("  %u messages with signal power above -3dBFS\n",
                st->strong_signal_count);
@@ -117,18 +122,37 @@ void display_stats(struct stats *st) {
     printf("%u total usable messages\n",
            st->messages_total);
 
-    printf("%u global CPR attempts with valid positions\n"
+    printf("%u surface position messages received\n"
+           "%u airborne position messages received\n"
+           "%u global CPR attempts with valid positions\n"
            "%u global CPR attempts with bad data\n"
+           "  %u global CPR attempts that failed the range check\n"
+           "  %u global CPR attempts that failed the speed check\n"
            "%u global CPR attempts with insufficient data\n"
            "%u local CPR attempts with valid positions\n"
-           "%u local CPR attempts with insufficient data\n"
+           "  %u aircraft-relative positions\n"
+           "  %u receiver-relative positions\n"
+           "%u local CPR attempts that did not produce useful positions\n"
+           "  %u local CPR attempts that failed the range check\n"
+           "  %u local CPR attempts that failed the speed check\n"
            "%u CPR messages that look like transponder failures filtered\n",
+           st->cpr_surface,
+           st->cpr_airborne,
            st->cpr_global_ok,
            st->cpr_global_bad,
+           st->cpr_global_range_checks,
+           st->cpr_global_speed_checks,
            st->cpr_global_skipped,
            st->cpr_local_ok,
+           st->cpr_local_aircraft_relative,
+           st->cpr_local_receiver_relative,
            st->cpr_local_skipped,
+           st->cpr_local_range_checks,
+           st->cpr_local_speed_checks,
            st->cpr_filtered);
+
+    printf("%u unique aircraft tracks\n", st->unique_aircraft);
+    printf("%u aircraft tracks where only one message was seen\n", st->single_message_aircraft);
 
     if (Modes.net && Modes.net_http_port)
         printf("%d HTTP requests\n", st->http_requests);
@@ -142,11 +166,12 @@ void display_stats(struct stats *st) {
                "  %llu ms for demodulation\n"
                "  %llu ms for reading from USB\n"
                "  %llu ms for network input and background tasks\n",
-               0.1 * (demod_cpu_millis + reader_cpu_millis + background_cpu_millis) / (st->end - st->start + 1),
+               100.0 * (demod_cpu_millis + reader_cpu_millis + background_cpu_millis) / (st->end - st->start + 1),
                (unsigned long long) demod_cpu_millis,
                (unsigned long long) reader_cpu_millis,
                (unsigned long long) background_cpu_millis);
     }
+
 
     fflush(stdout);
 }
@@ -216,11 +241,23 @@ void add_stats(const struct stats *st1, const struct stats *st2, struct stats *t
     target->http_requests = st1->http_requests + st2->http_requests;
 
     // CPR decoding:
+    target->cpr_surface = st1->cpr_surface + st2->cpr_surface;
+    target->cpr_airborne = st1->cpr_airborne + st2->cpr_airborne;
     target->cpr_global_ok = st1->cpr_global_ok + st2->cpr_global_ok;
     target->cpr_global_bad = st1->cpr_global_bad + st2->cpr_global_bad;
     target->cpr_global_skipped = st1->cpr_global_skipped + st2->cpr_global_skipped;
+    target->cpr_global_range_checks = st1->cpr_global_range_checks + st2->cpr_global_range_checks;
+    target->cpr_global_speed_checks = st1->cpr_global_speed_checks + st2->cpr_global_speed_checks;
     target->cpr_local_ok = st1->cpr_local_ok + st2->cpr_local_ok;
+    target->cpr_local_aircraft_relative = st1->cpr_local_aircraft_relative + st2->cpr_local_aircraft_relative;
+    target->cpr_local_receiver_relative = st1->cpr_local_receiver_relative + st2->cpr_local_receiver_relative;
     target->cpr_local_skipped = st1->cpr_local_skipped + st2->cpr_local_skipped;
+    target->cpr_local_range_checks = st1->cpr_local_range_checks + st2->cpr_local_range_checks;
+    target->cpr_local_speed_checks = st1->cpr_local_speed_checks + st2->cpr_local_speed_checks;
     target->cpr_filtered = st1->cpr_filtered + st2->cpr_filtered;
+
+    // aircraft
+    target->unique_aircraft = st1->unique_aircraft + st2->unique_aircraft;
+    target->single_message_aircraft = st1->single_message_aircraft + st2->single_message_aircraft;
 }
 

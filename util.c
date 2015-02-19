@@ -1,6 +1,6 @@
 // Part of dump1090, a Mode S message decoder for RTLSDR devices.
 //
-// stats.c: statistics structures and prototypes.
+// util.c: misc utilities
 //
 // Copyright (c) 2015 Oliver Jowett <oliver@mutability.co.uk>
 //
@@ -47,84 +47,35 @@
 //   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 //   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef DUMP1090_STATS_H
-#define DUMP1090_STATS_H
+#include "util.h"
 
-struct stats {
-    uint64_t start;
-    uint64_t end;
+#include <stdlib.h>
+#include <sys/time.h>
 
-    // Mode S demodulator counts:
-    uint32_t demod_preambles;
-    uint32_t demod_rejected_bad;
-    uint32_t demod_rejected_unknown_icao;
-    uint32_t demod_accepted[MODES_MAX_BITERRORS+1];
+uint64_t mstime(void)
+{
+    struct timeval tv;
+    uint64_t mst;
 
-    // Mode A/C demodulator counts:
-    uint32_t demod_modeac;
+    gettimeofday(&tv, NULL);
+    mst = ((uint64_t)tv.tv_sec)*1000;
+    mst += tv.tv_usec/1000;
+    return mst;
+}
 
-    uint32_t blocks_processed;
-    uint32_t blocks_dropped;
+int64_t receiveclock_ns_elapsed(uint64_t t1, uint64_t t2)
+{
+    return (t2 - t1) * 1000U / 12U;
+}
 
-    // timing:
-    struct timespec demod_cpu;
-    struct timespec reader_cpu;
-    struct timespec background_cpu;
-
-    // noise floor:
-    double noise_power_sum;
-    uint32_t noise_power_count;
-
-    // mean signal power:
-    double signal_power_sum;
-    uint32_t signal_power_count;
-
-    // peak signal power seen
-    double peak_signal_power;
-
-    // number of signals with power > -3dBFS
-    uint32_t strong_signal_count;
-
-    // remote messages:
-    uint32_t remote_received_modeac;
-    uint32_t remote_received_modes;
-    uint32_t remote_rejected_bad;
-    uint32_t remote_rejected_unknown_icao;
-    uint32_t remote_accepted[MODES_MAX_BITERRORS+1];
-
-    // total messages:
-    uint32_t messages_total;
-
-    // network:
-    uint32_t http_requests;
-
-    // CPR decoding:
-    unsigned int cpr_surface;
-    unsigned int cpr_airborne;
-    unsigned int cpr_global_ok;
-    unsigned int cpr_global_bad;
-    unsigned int cpr_global_skipped;
-    unsigned int cpr_global_range_checks;
-    unsigned int cpr_global_speed_checks;
-    unsigned int cpr_local_ok;
-    unsigned int cpr_local_skipped;
-    unsigned int cpr_local_range_checks;
-    unsigned int cpr_local_speed_checks;
-    unsigned int cpr_local_aircraft_relative;
-    unsigned int cpr_local_receiver_relative;
-    unsigned int cpr_filtered;
-
-    // aircraft:
-    // total "new" aircraft (i.e. not seen in the last 30 or 300s)
-    unsigned int unique_aircraft;
-    // we saw only a single message
-    unsigned int single_message_aircraft;
-};    
-
-void add_stats(const struct stats *st1, const struct stats *st2, struct stats *target);
-void display_stats(struct stats *st);
-void reset_stats(struct stats *st);
-
-void add_timespecs(const struct timespec *x, const struct timespec *y, struct timespec *z);
-
-#endif
+void normalize_timespec(struct timespec *ts)
+{
+    if (ts->tv_nsec > 1000000000) {
+        ts->tv_sec += ts->tv_nsec / 1000000000;
+        ts->tv_nsec = ts->tv_nsec % 1000000000;
+    } else if (ts->tv_nsec < 0) {
+        long adjust = ts->tv_nsec / 1000000000 + 1;
+        ts->tv_sec -= adjust;
+        ts->tv_nsec = (ts->tv_nsec + 1000000000 * adjust) % 1000000000;
+    }
+}

@@ -127,7 +127,7 @@ void modesInitNet(void) {
                             services[j].writer->socket = s;
                             services[j].writer->connections = 0;
                             services[j].writer->dataUsed = 0;
-                            services[j].writer->lastWrite = time(NULL);
+                            services[j].writer->lastWrite = mstime();
                         }
 		} else {
 			if (Modes.debug & MODES_DEBUG_NET) printf("%s port is disabled\n", services[j].descr);
@@ -165,7 +165,7 @@ struct client * modesAcceptClients(void) {
 
 			if (services[j].writer) {
 				if (++ services[j].writer->connections == 1) {
-					services[j].writer->lastWrite = time(NULL); // suppress heartbeat initially
+                                    services[j].writer->lastWrite = mstime(); // suppress heartbeat initially
 				}
 			}
 
@@ -229,7 +229,7 @@ static void flushWrites(struct net_writer *writer) {
     }
 
     writer->dataUsed = 0;
-    writer->lastWrite = time(NULL);
+    writer->lastWrite = mstime();
 }
 
 // Prepare to write up to 'len' bytes to the given net_writer.
@@ -347,12 +347,16 @@ void modesSendRawOutput(struct modesMessage *mm) {
 // The message structure mm->bFlags tells us what has been updated by this message
 //
 void modesSendSBSOutput(struct modesMessage *mm) {
-    char *p = prepareWrite(&Modes.sbs_out, 200);
-    uint32_t     offset;
-    struct timeb epocTime_receive, epocTime_now;
+    char *p;
+    struct timespec now;
     struct tm    stTime_receive, stTime_now;
     int          msgType;
 
+    // For now, suppress non-ICAO addresses
+    if (mm->addr & MODES_NON_ICAO_ADDRESS)
+        return;
+
+    p = prepareWrite(&Modes.sbs_out, 200);
     if (!p)
         return;
 
@@ -403,32 +407,19 @@ void modesSendSBSOutput(struct modesMessage *mm) {
     p += sprintf(p, "MSG,%d,111,11111,%06X,111111,", msgType, mm->addr); 
 
     // Find current system time
-    ftime(&epocTime_now);                                         // get the current system time & date
-    stTime_now = *localtime(&epocTime_now.time);
+    clock_gettime(CLOCK_REALTIME, &now);
+    localtime_r(&now.tv_sec, &stTime_now);
 
     // Find message reception time
-    if (mm->timestampMsg && !mm->remote) {                        // Make sure the records' timestamp is valid before using it
-        epocTime_receive = Modes.stSystemTimeBlk;                 // This is the time of the start of the Block we're processing
-        offset   = (int) (mm->timestampMsg - Modes.timestampBlk); // This is the time (in 12Mhz ticks) into the Block
-        offset   = offset / 12000;                                // convert to milliseconds
-        epocTime_receive.millitm += offset;                       // add on the offset time to the Block start time
-        if (epocTime_receive.millitm > 999) {                     // if we've caused an overflow into the next second...
-            epocTime_receive.millitm -= 1000;
-            epocTime_receive.time ++;                             //    ..correct the overflow
-        }
-        stTime_receive = *localtime(&epocTime_receive.time);
-    } else {
-        epocTime_receive = epocTime_now;                          // We don't have a usable reception time; use the current system time
-        stTime_receive = stTime_now;
-    }
+    localtime_r(&mm->sysTimestampMsg.tv_sec, &stTime_receive);
 
     // Fields 7 & 8 are the message reception time and date
     p += sprintf(p, "%04d/%02d/%02d,", (stTime_receive.tm_year+1900),(stTime_receive.tm_mon+1), stTime_receive.tm_mday);
-    p += sprintf(p, "%02d:%02d:%02d.%03d,", stTime_receive.tm_hour, stTime_receive.tm_min, stTime_receive.tm_sec, epocTime_receive.millitm);
+    p += sprintf(p, "%02d:%02d:%02d.%03u,", stTime_receive.tm_hour, stTime_receive.tm_min, stTime_receive.tm_sec, (unsigned) (mm->sysTimestampMsg.tv_nsec / 1000000U));
 
     // Fields 9 & 10 are the current time and date
     p += sprintf(p, "%04d/%02d/%02d,", (stTime_now.tm_year+1900),(stTime_now.tm_mon+1), stTime_now.tm_mday);
-    p += sprintf(p, "%02d:%02d:%02d.%03d", stTime_now.tm_hour, stTime_now.tm_min, stTime_now.tm_sec, epocTime_now.millitm);
+    p += sprintf(p, "%02d:%02d:%02d.%03u", stTime_now.tm_hour, stTime_now.tm_min, stTime_now.tm_sec, (unsigned) (now.tv_nsec / 1000000U));
 
     // Field 11 is the callsign (if we have it)
     if (mm->bFlags & MODES_ACFLAGS_CALLSIGN_VALID) {p += sprintf(p, ",%s", mm->flight);}
@@ -570,6 +561,9 @@ int decodeBinMessage(struct client *c, char *p) {
             if (0x1A == ch) {p++;}
         }
 
+        // record reception time as the time we read it.
+        clock_gettime(CLOCK_REALTIME, &mm.sysTimestampMsg);
+
         ch = *p++;  // Grab the signal level
         mm.signalLevel = ((unsigned char)ch / 256.0);
         mm.signalLevel = mm.signalLevel * mm.signalLevel + 1e-5;
@@ -693,6 +687,9 @@ int decodeHexMessage(struct client *c, char *hex) {
         msg[j/2] = (high << 4) | low;
     }
 
+    // record reception time as the time we read it.
+    clock_gettime(CLOCK_REALTIME, &mm.sysTimestampMsg);
+
     if (l == (MODEAC_MSG_BYTES * 2)) {  // ModeA or ModeC
         Modes.stats_current.remote_received_modeac++;
         decodeModeAMessage(&mm, ((msg[0] << 8) | msg[1]));
@@ -744,7 +741,7 @@ static const char *jsonEscapeString(const char *str) {
 }
 
 char *generateAircraftJson(const char *url_path, int *len) {
-    time_t now = time(NULL);
+    uint64_t now = mstime();
     struct aircraft *a;
     int buflen = 1024; // The initial buffer is incremented as needed
     char *buf = (char *) malloc(buflen), *p = buf, *end = buf+buflen;
@@ -753,10 +750,10 @@ char *generateAircraftJson(const char *url_path, int *len) {
     MODES_NOTUSED(url_path);
 
     p += snprintf(p, end-p,
-                  "{ \"now\" : %d,\n"
+                  "{ \"now\" : %.1f,\n"
                   "  \"messages\" : %u,\n"
                   "  \"aircraft\" : [",
-                  (int)now,
+                  now / 1000.0,
                   Modes.stats_current.messages_total + Modes.stats_alltime.messages_total);
 
     for (a = Modes.aircrafts; a; a = a->next) {
@@ -779,7 +776,7 @@ char *generateAircraftJson(const char *url_path, int *len) {
         if (a->bFlags & MODES_ACFLAGS_CALLSIGN_VALID)
             p += snprintf(p, end-p, ",\"flight\":\"%s\"", jsonEscapeString(a->flight));
         if (a->bFlags & MODES_ACFLAGS_LATLON_VALID)
-            p += snprintf(p, end-p, ",\"lat\":%f,\"lon\":%f,\"seen_pos\":%d", a->lat, a->lon, (int)(now - a->seenLatLon));
+            p += snprintf(p, end-p, ",\"lat\":%f,\"lon\":%f,\"nucp\":%u,\"seen_pos\":%.1f", a->lat, a->lon, a->pos_nuc, (now - a->seenLatLon)/1000.0);
         if ((a->bFlags & MODES_ACFLAGS_AOG_VALID) && (a->bFlags & MODES_ACFLAGS_AOG))
             p += snprintf(p, end-p, ",\"altitude\":\"ground\"");
         else if (a->bFlags & MODES_ACFLAGS_ALTITUDE_VALID)
@@ -791,8 +788,8 @@ char *generateAircraftJson(const char *url_path, int *len) {
         if (a->bFlags & MODES_ACFLAGS_SPEED_VALID)
             p += snprintf(p, end-p, ",\"speed\":%d", a->speed);
 
-        p += snprintf(p, end-p, ",\"messages\":%ld,\"seen\":%d,\"rssi\":%.1f}",
-                      a->messages, (int)(now - a->seen),
+        p += snprintf(p, end-p, ",\"messages\":%ld,\"seen\":%.1f,\"rssi\":%.1f}",
+                      a->messages, (now - a->seen)/1000.0,
                       10 * log10((a->signalLevel[0] + a->signalLevel[1] + a->signalLevel[2] + a->signalLevel[3] +
                                   a->signalLevel[4] + a->signalLevel[5] + a->signalLevel[6] + a->signalLevel[7] + 1e-5) / 8));
         
@@ -819,10 +816,10 @@ static char * appendStatsJson(char *p,
     int i;
 
     p += snprintf(p, end-p,
-                  "\"%s\":{\"start\":%d,\"end\":%d",
+                  "\"%s\":{\"start\":%.1f,\"end\":%.1f",
                   key,
-                  (int)st->start,
-                  (int)st->end);
+                  st->start / 1000.0,
+                  st->end / 1000.0);
 
     if (!Modes.net_only) {
         p += snprintf(p, end-p,
@@ -883,23 +880,43 @@ static char * appendStatsJson(char *p,
         uint64_t background_cpu_millis = (uint64_t)st->background_cpu.tv_sec*1000UL + st->background_cpu.tv_nsec/1000000UL;
 
         p += snprintf(p, end-p,
-                      ",\"cpr\":{\"global_ok\":%u"
+                      ",\"cpr\":{\"surface\":%u"
+                      ",\"airborne\":%u"
+                      ",\"global_ok\":%u"
                       ",\"global_bad\":%u"
+                      ",\"global_range\":%u"
+                      ",\"global_speed\":%u"
                       ",\"global_skipped\":%u"
                       ",\"local_ok\":%u"
+                      ",\"local_aircraft_relative\":%u"
+                      ",\"local_receiver_relative\":%u"
                       ",\"local_skipped\":%u"
+                      ",\"local_range\":%u"
+                      ",\"local_speed\":%u"
                       ",\"filtered\":%u}"
                       ",\"cpu\":{\"demod\":%llu,\"reader\":%llu,\"background\":%llu}"
+                      ",\"tracks\":{\"all\":%u"
+                      ",\"single_message\":%u}"
                       ",\"messages\":%u}",
+                      st->cpr_surface,
+                      st->cpr_airborne,
                       st->cpr_global_ok,
                       st->cpr_global_bad,
+                      st->cpr_global_range_checks,
+                      st->cpr_global_speed_checks,
                       st->cpr_global_skipped,
                       st->cpr_local_ok,
+                      st->cpr_local_aircraft_relative,
+                      st->cpr_local_receiver_relative,
                       st->cpr_local_skipped,
+                      st->cpr_local_range_checks,
+                      st->cpr_local_speed_checks,
                       st->cpr_filtered,
                       (unsigned long long)demod_cpu_millis,
                       (unsigned long long)reader_cpu_millis,
                       (unsigned long long)background_cpu_millis,
+                      st->unique_aircraft,
+                      st->single_message_aircraft,
                       st->messages_total);
     }
 
@@ -953,9 +970,9 @@ char *generateReceiverJson(const char *url_path, int *len)
 
     p += sprintf(p, "{ " \
                  "\"version\" : \"%s\", "
-                 "\"refresh\" : %d, "
+                 "\"refresh\" : %.0f, "
                  "\"history\" : %d",
-                 MODES_DUMP1090_VERSION, Modes.json_interval * 1000, history_size);
+                 MODES_DUMP1090_VERSION, 1.0*Modes.json_interval, history_size);
 
     if (Modes.json_location_accuracy && (Modes.fUserLat != 0.0 || Modes.fUserLon != 0.0)) {
         if (Modes.json_location_accuracy == 1) {
@@ -1377,20 +1394,20 @@ void modesReadFromClient(struct client *c, char *sep,
 
 static void writeFATSV() {
     struct aircraft *a;
-    time_t now;
-    static time_t lastTime = 0;
+    uint64_t now;
+    static uint64_t next_update;
 
     if (!Modes.fatsv_out.connections) {
         return; // no active connections
     }
 
-    now = time(NULL);
-    if (now <= lastTime) {
-        // scan once a second at most
+    now = mstime();
+    if (now < next_update) {
         return;
     }
 
-    lastTime = now;
+    // scan once a second at most
+    next_update = now + 1000;
 
     for (a = Modes.aircrafts; a; a = a->next) {
         int altValid = 0;
@@ -1399,7 +1416,7 @@ static void writeFATSV() {
         int ground = 0;
         int latlonValid = 0;
         int useful = 0;
-        int emittedSecondsAgo;
+        uint64_t emittedMillisAgo;
         char *p, *end;
 
         // skip non-ICAO
@@ -1414,10 +1431,10 @@ static void writeFATSV() {
             continue;
         }
 
-        emittedSecondsAgo = (int)(now - a->fatsv_last_emitted);
+        emittedMillisAgo = (now - a->fatsv_last_emitted);
 
         // don't emit more than once every five seconds
-        if (emittedSecondsAgo < 5) {
+        if (emittedMillisAgo < 5000) {
             continue;
         }
 
@@ -1440,14 +1457,14 @@ static void writeFATSV() {
         }
 
         // if it's over 10,000 feet, don't emit more than once every 10 seconds
-        if (alt > 10000 && emittedSecondsAgo < 10) {
+        if (alt > 10000 && emittedMillisAgo < 10000) {
             continue;
         }
 
         // disable if you want only ads-b
         // also don't send mode S very often
         if (!latlonValid) {
-            if (emittedSecondsAgo < 30) {
+            if (emittedMillisAgo < 30000) {
                 continue;
             }
         } else {
@@ -1457,13 +1474,13 @@ static void writeFATSV() {
                 if (alt < 10000) {
                     // it hasn't changed much but we're below 10,000 feet 
                     // so update more frequently
-                    if (emittedSecondsAgo < 10) {
+                    if (emittedMillisAgo < 10000) {
                         continue;
                     }
                 } else {
                     // above 10,000 feet, don't update so often when it 
                     // hasn't changed much
-                    if (emittedSecondsAgo < 30) {
+                    if (emittedMillisAgo < 30000) {
                         continue;
                     }
                 }
@@ -1476,7 +1493,7 @@ static void writeFATSV() {
 
         end = p + TSV_MAX_PACKET_SIZE;
 #       define bufsize(_p,_e) ((_p) >= (_e) ? (size_t)0 : (size_t)((_e) - (_p)))
-        p += snprintf(p, bufsize(p,end), "clock\t%ld\thexid\t%06X", a->seen, a->addr);
+        p += snprintf(p, bufsize(p,end), "clock\t%ld\thexid\t%06X", (long)(a->seen / 1000), a->addr);
 
         if (*a->flight != '\0') {
             p += snprintf(p, bufsize(p,end), "\tident\t%s", a->flight);
@@ -1540,7 +1557,7 @@ static void writeFATSV() {
 //
 void modesNetPeriodicWork(void) {
 	struct client *c, **prev;
-	time_t now = time(NULL);
+        uint64_t now = mstime();
 	int j;
 	int need_heartbeat = 0, need_flush = 0;
 

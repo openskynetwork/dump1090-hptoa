@@ -71,7 +71,6 @@
     #include <unistd.h>
     #include <math.h>
     #include <sys/time.h>
-    #include <sys/timeb.h>
     #include <signal.h>
     #include <fcntl.h>
     #include <ctype.h>
@@ -134,7 +133,7 @@
 
 #define MODES_OUT_BUF_SIZE         (1500)
 #define MODES_OUT_FLUSH_SIZE       (MODES_OUT_BUF_SIZE - 256)
-#define MODES_OUT_FLUSH_INTERVAL   (60)
+#define MODES_OUT_FLUSH_INTERVAL   (60000)
 
 #define MODES_UNIT_FEET 0
 #define MODES_UNIT_METERS 1
@@ -179,10 +178,9 @@
 
 #define MODES_INTERACTIVE_REFRESH_TIME 250      // Milliseconds
 #define MODES_INTERACTIVE_ROWS          22      // Rows on screen
-#define MODES_INTERACTIVE_DELETE_TTL   300      // Delete from the list after 300 seconds
-#define MODES_INTERACTIVE_DISPLAY_TTL   60      // Delete from display after 60 seconds
+#define MODES_INTERACTIVE_DISPLAY_TTL 60000     // Delete from display after 60 seconds
 
-#define MODES_NET_HEARTBEAT_INTERVAL    60      // seconds
+#define MODES_NET_HEARTBEAT_INTERVAL 60000      // milliseconds
 
 #define MODES_NET_SERVICES_NUM          7
 #define MODES_NET_INPUT_RAW_PORT    30001
@@ -201,7 +199,7 @@
 #endif
 
 #define HISTORY_SIZE 120
-#define HISTORY_INTERVAL 30
+#define HISTORY_INTERVAL 30000
 
 #define MODES_NOTUSED(V) ((void) V)
 
@@ -212,6 +210,7 @@
 
 // Include subheaders after all the #defines are in place
 
+#include "util.h"
 #include "anet.h"
 #include "crc.h"
 #include "demod_2000.h"
@@ -219,7 +218,6 @@
 #include "stats.h"
 #include "cpr.h"
 #include "icao_filter.h"
-
 
 //======================== structure declarations =========================
 
@@ -232,49 +230,13 @@ struct client {
     char   buf[MODES_CLIENT_BUF_SIZE+1]; // Read buffer
 };
 
-// Structure used to describe an aircraft in iteractive mode
-struct aircraft {
-    uint32_t      addr;           // ICAO address
-    char          flight[16];     // Flight number
-    double        signalLevel[8]; // Last 8 Signal Amplitudes
-    int           altitude;       // Altitude
-    int           speed;          // Velocity
-    int           track;          // Angle of flight
-    int           vert_rate;      // Vertical rate.
-    time_t        seen;           // Time at which the last packet was received
-    time_t        seenLatLon;     // Time at which the last lat long was calculated
-    uint64_t      timestamp;      // Timestamp at which the last packet was received
-    uint64_t      timestampLatLon;// Timestamp at which the last lat long was calculated
-    long          messages;       // Number of Mode S messages received
-    int           modeA;          // Squawk
-    int           modeC;          // Altitude
-    long          modeAcount;     // Mode A Squawk hit Count
-    long          modeCcount;     // Mode C Altitude hit Count
-    int           modeACflags;    // Flags for mode A/C recognition
-
-    int           fatsv_emitted_altitude;  // last FA emitted altitude
-    int           fatsv_emitted_track;     // last FA emitted angle of flight
-    time_t        fatsv_last_emitted;      // time aircraft was last FA emitted
-
-    // Encoded latitude and longitude as extracted by odd and even CPR encoded messages
-    int           odd_cprlat;
-    int           odd_cprlon;
-    int           even_cprlat;
-    int           even_cprlon;
-    uint64_t      odd_cprtime;
-    uint64_t      even_cprtime;
-    double        lat, lon;       // Coordinated obtained from CPR encoded data
-    int           bFlags;         // Flags related to valid fields in this structure
-    struct aircraft *next;        // Next aircraft in our linked list
-};
-
 // Common writer state for all output sockets of one type
 struct net_writer {
     int socket;          // listening socket FD, used to identify the owning service
     int connections;     // number of active clients
     void *data;          // shared write buffer, sized MODES_OUT_BUF_SIZE
     int dataUsed;        // number of bytes of write buffer currently used
-    time_t lastWrite;    // time of last write to clients
+    uint64_t lastWrite;  // time of last write to clients
 };
 
 // Program global state
@@ -284,7 +246,7 @@ struct {                             // Internal state
     pthread_mutex_t data_mutex;      // Mutex to synchronize buffer access
     pthread_cond_t  data_cond;       // Conditional variable associated
     uint16_t       *pData          [MODES_ASYNC_BUF_NUMBER]; // Raw IQ sample buffers from RTL
-    struct timeb    stSystemTimeRTL[MODES_ASYNC_BUF_NUMBER]; // System time when RTL passed us this block
+    struct timespec stSystemTimeRTL[MODES_ASYNC_BUF_NUMBER]; // System time when RTL passed us this block
     int             iDataIn;         // Fifo input pointer
     int             iDataOut;        // Fifo output pointer
     int             iDataReady;      // Fifo content count
@@ -296,7 +258,7 @@ struct {                             // Internal state
     uint16_t       *pFileData;       // Raw IQ samples buffer (from a File)
     uint16_t       *magnitude;       // Magnitude vector
     uint64_t        timestampBlk;    // Timestamp of the start of the current block
-    struct timeb    stSystemTimeBlk; // System time when RTL passed us currently processing this block
+    struct timespec stSystemTimeBlk; // System time when RTL passed us currently processing this block
     int             fd;              // --ifile option file descriptor
     uint16_t       *maglut;          // I/Q -> Magnitude lookup table
     uint16_t       *log10lut;        // Magnitude -> log10 lookup table
@@ -338,10 +300,10 @@ struct {                             // Internal state
     int   debug;                     // Debugging mode
     int   net;                       // Enable networking
     int   net_only;                  // Enable just networking
-    int   net_heartbeat_interval;    // TCP heartbeat interval (seconds)
+    uint64_t net_heartbeat_interval; // TCP heartbeat interval (milliseconds)
     int   net_output_sbs_port;       // SBS output TCP port
     int   net_output_flush_size;     // Minimum Size of output data
-    int   net_output_flush_interval; // Maximum interval (in seconds) between outputwrites
+    uint64_t net_output_flush_interval; // Maximum interval (in milliseconds) between outputwrites
     int   net_output_raw_port;       // Raw output TCP port
     int   net_input_raw_port;        // Raw input TCP port
     int   net_output_beast_port;     // Beast output TCP port
@@ -354,15 +316,14 @@ struct {                             // Internal state
     int   quiet;                     // Suppress stdout
     int   interactive;               // Interactive mode
     int   interactive_rows;          // Interactive mode: max number of rows
-    int   interactive_display_ttl;   // Interactive mode: TTL display
-    int   interactive_delete_ttl;    // Interactive mode: TTL before deletion
-    int   stats;                     // Print stats at exit in --ifile mode
+    uint64_t interactive_display_ttl;// Interactive mode: TTL display
+    uint64_t stats;                  // Interval (millis) between stats dumps,
     int   onlyaddr;                  // Print only ICAO addresses
     int   metric;                    // Use metric units
     int   mlat;                      // Use Beast ascii format for raw data output, i.e. @...; iso *...;
     int   interactive_rtl1090;       // flight table in interactive mode is formatted like RTL1090
     char *json_dir;                  // Path to json base directory, or NULL not to write json.
-    int   json_interval;             // Interval between rewriting the json aircraft file
+    uint64_t json_interval;          // Interval between rewriting the json aircraft file, in milliseconds; also the advertised map refresh interval
     int   json_location_accuracy;    // Accuracy of location metadata: 0=none, 1=approx, 2=exact
 
     int   json_aircraft_history_next;
@@ -377,10 +338,8 @@ struct {                             // Internal state
     int    bUserFlags;              // Flags relating to the user details
     double maxRange;                // Absolute maximum decoding range, in *metres*
 
-    // Interactive mode
+    // State tracking
     struct aircraft *aircrafts;
-    uint64_t         interactive_last_update; // Last screen update in milliseconds
-    time_t           last_cleanup_time;       // Last cleanup time in seconds
 
     // Statistics
     struct stats stats_current;
@@ -402,7 +361,8 @@ struct modesMessage {
     uint32_t      crc;                            // Message CRC
     int           correctedbits;                  // No. of bits corrected 
     uint32_t      addr;                           // Address Announced
-    uint64_t      timestampMsg;                   // Timestamp of the message
+    uint64_t      timestampMsg;                   // Timestamp of the message (12MHz clock)
+    struct timespec sysTimestampMsg;              // Timestamp of the message (system time)
     int           remote;                         // If set this message is from a remote station
     double        signalLevel;                    // RSSI, in the range [0..1], as a fraction of full-scale power
     int           score;                          // Scoring from scoreModesMessage, if used
@@ -417,6 +377,7 @@ struct modesMessage {
     int    heading;             // Reported by aircraft, or computed from from EW and NS velocity
     int    raw_latitude;        // Non decoded latitude.
     int    raw_longitude;       // Non decoded longitude.
+    unsigned nuc_p;             // NUCp value implied by message type
     double fLat;                // Coordinates obtained from CPR encoded data if/when decoded
     double fLon;                // Coordinates obtained from CPR encoded data if/when decoded
     char   flight[16];          // 8 chars flight number.
@@ -440,6 +401,9 @@ struct modesMessage {
     int  unit; 
     int  bFlags;                // Flags related to fields in this structure
 };
+
+// This one needs modesMessage:
+#include "track.h"
 
 // ======================== function declarations =========================
 
@@ -466,11 +430,7 @@ void computeMagnitudeVector(uint16_t *pData);
 //
 // Functions exported from interactive.c
 //
-struct aircraft* interactiveReceiveData(struct modesMessage *mm);
 void  interactiveShowData(void);
-void  interactiveRemoveStaleAircrafts(void);
-int   decodeBinMessage   (struct client *c, char *p);
-struct aircraft *interactiveFindAircraft(uint32_t addr);
 
 //
 // Functions exported from net_io.c
@@ -479,6 +439,7 @@ void modesInitNet         (void);
 void modesQueueOutput     (struct modesMessage *mm);
 void modesReadFromClient(struct client *c, char *sep, int(*handler)(struct client *, char *));
 void modesNetPeriodicWork (void);
+int   decodeBinMessage   (struct client *c, char *p);
 
 void writeJsonToFile(const char *file, char * (*generator) (const char*,int*));
 char *generateAircraftJson(const char *url_path, int *len);

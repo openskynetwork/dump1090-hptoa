@@ -100,7 +100,10 @@ static int decodeID13Field(int ID13Field) {
     if (ID13Field & 0x0001) {hexGillham |= 0x0004;} // Bit  0 = D4
 
     return (hexGillham);
-    }
+}
+
+#define INVALID_ALTITUDE (-9999)
+
 //
 //=========================================================================
 //
@@ -123,15 +126,17 @@ static int decodeAC13Field(int AC13Field, int *unit) {
         } else {
             // N is an 11 bit Gillham coded altitude
             int n = ModeAToModeC(decodeID13Field(AC13Field));
-            if (n < -12) {n = 0;}
+            if (n < -12) {
+                return INVALID_ALTITUDE;
+            }
 
             return (100 * n);
         }
     } else {
         *unit = MODES_UNIT_METERS;
         // TODO: Implement altitude when meter unit is selected
+        return INVALID_ALTITUDE;
     }
-    return 0;
 }
 //
 //=========================================================================
@@ -153,7 +158,9 @@ static int decodeAC12Field(int AC12Field, int *unit) {
         int n = ((AC12Field & 0x0FC0) << 1) | 
                  (AC12Field & 0x003F);
         n = ModeAToModeC(decodeID13Field(n));
-        if (n < -12) {n = 0;}
+        if (n < -12) {
+            return INVALID_ALTITUDE;
+        }
 
         return (100 * n);
     }
@@ -465,6 +472,13 @@ int decodeModesMessage(struct modesMessage *mm, unsigned char *msg)
             if (!ei) {
                 return -2; // couldn't fix it
             }
+
+            // see crc.c comments: we do not attempt to fix
+            // more than single-bit errors, as two-bit
+            // errors are ambiguous in DF11.
+            if (ei->errors > 1)
+                return -2; // can't correct errors
+
             mm->correctedbits = ei->errors;
             modesChecksumFix(msg, ei);
 
@@ -545,34 +559,18 @@ int decodeModesMessage(struct modesMessage *mm, unsigned char *msg)
 
     mm->bFlags = 0;
 
-    // CF (Control field)
-    // done first so we can use it in AA.
-    if (mm->msgtype == 18) {
-        mm->cf = msg[0] & 7;
-    }
-
     // AA (Address announced)
     if (mm->msgtype == 11 || mm->msgtype == 17 || mm->msgtype == 18) {
         mm->addr  = (msg[1] << 16) | (msg[2] << 8) | (msg[3]);
-
-        if (mm->msgtype == 18 && (mm->cf != 0 && mm->cf != 6))
-            mm->addr |= MODES_NON_ICAO_ADDRESS; // don't confuse this with any ICAO address
-
-        if (!mm->correctedbits && (mm->msgtype != 11 || mm->iid == 0)) {
-            // No CRC errors seen, and either it was an DF17/18 extended squitter
-            // or a DF11 acquisition squitter with II = 0. We probably have the right address.
-
-            // NB this is the only place that adds addresses!
-            icaoFilterAdd(mm->addr);
-        }
     }
 
     // AC (Altitude Code)
     if (mm->msgtype == 0 || mm->msgtype == 4 || mm->msgtype == 16 || mm->msgtype == 20) {
         int AC13Field = ((msg[2] << 8) | msg[3]) & 0x1FFF; 
         if (AC13Field) { // Only attempt to decode if a valid (non zero) altitude is present
-            mm->bFlags  |= MODES_ACFLAGS_ALTITUDE_VALID;
             mm->altitude = decodeAC13Field(AC13Field, &mm->unit);
+            if (mm->altitude != INVALID_ALTITUDE)
+                mm->bFlags  |= MODES_ACFLAGS_ALTITUDE_VALID;
         }
     }
 
@@ -589,6 +587,11 @@ int decodeModesMessage(struct modesMessage *mm, unsigned char *msg)
     }
 
     // CC (Cross-link capability) not decoded
+
+    // CF (Control field)
+    if (mm->msgtype == 18) {
+        mm->cf = msg[0] & 7;
+    }
 
     // DR (Downlink Request) not decoded
 
@@ -624,12 +627,8 @@ int decodeModesMessage(struct modesMessage *mm, unsigned char *msg)
 
     // ME (message, extended squitter)
     if (mm->msgtype == 17 ||   //  Extended squitter
-        (mm->msgtype == 18 &&  //  Extended squitter/non-transponder:
-         (mm->cf == 0 ||       //   ADS-B ES/NT devices that report the ICAO 24-bit address in the AA field
-          mm->cf == 1 ||       //   Reserved for ADS-B for ES/NT devices that use other addressing techniques in the AA field
-          mm->cf == 5 ||       //   TIS-B messages that relay ADS-B Messages using anonymous 24-bit addresses
-          mm->cf == 6))) {     //   ADS-B rebroadcast using the same type codes and message formats as defined for DF = 17 ADS-B messages
-            decodeExtendedSquitter(mm);
+        mm->msgtype == 18) {   //  Extended squitter/non-transponder:
+        decodeExtendedSquitter(mm);
     }
 
     // MV (message, ACAS) not decoded
@@ -643,6 +642,17 @@ int decodeModesMessage(struct modesMessage *mm, unsigned char *msg)
         mm->bFlags |= MODES_ACFLAGS_AOG_VALID;        
         if (msg[0] & 0x04)
             mm->bFlags |= MODES_ACFLAGS_AOG;
+    }
+
+    if (!mm->correctedbits && (mm->msgtype == 17 || mm->msgtype == 18 || (mm->msgtype != 11 || mm->iid == 0))) {
+        // No CRC errors seen, and either it was an DF17/18 extended squitter
+        // or a DF11 acquisition squitter with II = 0. We probably have the right address.
+
+        // We wait until here to do this as we may have needed to decode an ES to note
+        // the type of address in DF18 messages.
+
+        // NB this is the only place that adds addresses!
+        icaoFilterAdd(mm->addr);
     }
 
     // all done
@@ -684,6 +694,39 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
     int metype = mm->metype = msg[4] >> 3;   // Extended squitter message type
     int mesub  = mm->mesub  = (metype == 29 ? ((msg[4]&6)>>1) : (msg[4]  & 7));   // Extended squitter message subtype
 
+    int check_imf = 0;
+
+    // Check CF on DF18 to work out the format of the ES and whether we need to look for an IMF bit
+    if (mm->msgtype == 18) {
+        switch (mm->cf) {
+        case 0: //   ADS-B ES/NT devices that report the ICAO 24-bit address in the AA field
+            break;
+
+        case 1: //   Reserved for ADS-B for ES/NT devices that use other addressing techniques in the AA field
+        case 5: //   TIS-B messages that relay ADS-B Messages using anonymous 24-bit addresses (format not explicitly defined, but it seems to follow DF17)
+            mm->addr |= MODES_NON_ICAO_ADDRESS;
+            break;
+
+        case 2: //   Fine TIS-B message (formats are close enough to DF17 for our purposes)
+        case 6: //   ADS-B rebroadcast using the same type codes and message formats as defined for DF = 17 ADS-B messages
+            check_imf = 1;
+            break;
+
+        case 3: //   Coarse TIS-B airborne position and velocity.
+            // TODO: decode me.
+            // For now we only look at the IMF bit.
+            if (msg[4] & 0x80)
+                mm->addr |= MODES_NON_ICAO_ADDRESS;
+            return;
+
+        default:    // All others, we don't know the format.
+            mm->addr |= MODES_NON_ICAO_ADDRESS; // assume non-ICAO
+            return;
+        }
+    }
+
+
+
     switch (metype) {
     case 1: case 2: case 3: case 4: {
         // Aircraft Identification and Category
@@ -714,6 +757,9 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
     }
 
     case 19: { // Airborne Velocity Message        
+        if (check_imf && (msg[5] & 0x80))
+            mm->addr |= MODES_NON_ICAO_ADDRESS;
+
         // Presumably airborne if we get an Airborne Velocity Message
         mm->bFlags |= MODES_ACFLAGS_AOG_VALID; 
         
@@ -788,6 +834,9 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
         // Ground position
         int movement;
 
+        if (check_imf && (msg[6] & 0x08))
+            mm->addr |= MODES_NON_ICAO_ADDRESS;
+
         mm->bFlags |= MODES_ACFLAGS_AOG_VALID | MODES_ACFLAGS_AOG;
         mm->raw_latitude  = ((msg[6] & 3) << 15) | (msg[7] << 7) | (msg[8] >> 1);
         mm->raw_longitude = ((msg[8] & 1) << 16) | (msg[9] << 8) | (msg[10]);
@@ -804,7 +853,8 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
             mm->bFlags |= MODES_ACFLAGS_HEADING_VALID;
             mm->heading = ((((msg[5] << 4) | (msg[6] >> 4)) & 0x007F) * 45) >> 4;
         }
-        
+
+        mm->nuc_p = (14 - metype);
         break;
     }
 
@@ -812,6 +862,9 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
     case 9: case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18: // Airborne position, baro
     case 20: case 21: case 22: { // Airborne position, GNSS HAE       
         int AC12Field = ((msg[5] << 4) | (msg[6] >> 4)) & 0x0FFF;
+
+        if (check_imf && (msg[4] & 0x01))
+            mm->addr |= MODES_NON_ICAO_ADDRESS;
 
         mm->bFlags |= MODES_ACFLAGS_AOG_VALID;
 
@@ -838,9 +891,17 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
         }
 
         if (AC12Field) {// Only attempt to decode if a valid (non zero) altitude is present
-            mm->bFlags |= MODES_ACFLAGS_ALTITUDE_VALID;
             mm->altitude = decodeAC12Field(AC12Field, &mm->unit);
+            if (mm->altitude != INVALID_ALTITUDE)
+                mm->bFlags  |= MODES_ACFLAGS_ALTITUDE_VALID;
         }
+
+        if (metype == 0 || metype == 18 || metype == 22)
+            mm->nuc_p = 0;
+        else if (metype < 18)
+            mm->nuc_p = (18 - metype);
+        else
+            mm->nuc_p = (29 - metype);
         
         break;
     }
@@ -866,6 +927,9 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
                 mm->bFlags |= MODES_ACFLAGS_SQUAWK_VALID;
                 mm->modeA   = decodeID13Field(ID13Field);
             }
+
+            if (check_imf && (msg[10] & 0x01))
+                mm->addr |= MODES_NON_ICAO_ADDRESS;
         }
         break;
     }
@@ -877,6 +941,8 @@ static void decodeExtendedSquitter(struct modesMessage *mm)
         break;
 
     case 31: // Aircraft Operational Status
+        if (check_imf && (msg[10] & 0x01))
+            mm->addr |= MODES_NON_ICAO_ADDRESS;
         break;
 
     default: 
@@ -933,7 +999,10 @@ static void displayExtendedSquitter(struct modesMessage *mm) {
     } else if (mm->metype >= 5 && mm->metype <= 22) { // Airborne position Baro
         printf("    F flag   : %s\n", (mm->msg[6] & 0x04) ? "odd" : "even");
         printf("    T flag   : %s\n", (mm->msg[6] & 0x08) ? "UTC" : "non-UTC");
-        printf("    Altitude : %d feet\n", mm->altitude);
+        if (mm->bFlags & MODES_ACFLAGS_ALTITUDE_VALID)
+            printf("    Altitude : %d feet\n", mm->altitude);
+        else
+            printf("    Altitude : not valid\n");
         if (mm->bFlags & MODES_ACFLAGS_LATLON_VALID) {
             if (mm->bFlags & MODES_ACFLAGS_REL_CPR_USED)
                 printf("    Local CPR decoding used.\n");
@@ -941,11 +1010,13 @@ static void displayExtendedSquitter(struct modesMessage *mm) {
                 printf("    Global CPR decoding used.\n");
             printf("    Latitude : %f (%d)\n", mm->fLat, mm->raw_latitude);
             printf("    Longitude: %f (%d)\n", mm->fLon, mm->raw_longitude);
+            printf("    NUCp:      %u\n", mm->nuc_p);
         } else {
             if (!(mm->bFlags & MODES_ACFLAGS_LLEITHER_VALID))
                 printf("    Bad position data, not decoded.\n");
             printf("    Latitude : %d (not decoded)\n", mm->raw_latitude);
             printf("    Longitude: %d (not decoded)\n", mm->raw_longitude);
+            printf("    NUCp:      %u\n", mm->nuc_p);
         }
     } else if (mm->metype == 28) { // Extended Squitter Aircraft Status
         if (mm->mesub == 1) {
@@ -1149,18 +1220,38 @@ void computeMagnitudeVector(uint16_t *p) {
 // processing and visualization
 //
 void useModesMessage(struct modesMessage *mm) {
+    struct aircraft *a;
+
     ++Modes.stats_current.messages_total;
 
-    // If we are decoding, track aircraft
-    interactiveReceiveData(mm);
+    // Track aircraft state
+    a = trackUpdateFromMessage(mm);
 
     // In non-interactive non-quiet mode, display messages on standard output
     if (!Modes.interactive && !Modes.quiet) {
         displayModesMessage(mm);
     }
 
-    // Feed output clients
-    if (Modes.net) {modesQueueOutput(mm);}
+    // Feed output clients.
+    // If in --net-verbatim mode, do this for all messages.
+    // Otherwise, apply a sanity-check filter and only
+    // forward messages when we have seen two of them.
+
+    // TODO: buffer the original message and forward it when we
+    // see a second message?
+
+    if (Modes.net) {
+        if (Modes.net_verbatim || a->messages > 1) {
+            // If this is the second message, and we
+            // squelched the first message, then re-emit the
+            // first message now.
+            if (!Modes.net_verbatim && a->messages == 2) {
+                modesQueueOutput(&a->first_message);
+            }
+
+            modesQueueOutput(mm);
+        }
+    }
 }
 
 //

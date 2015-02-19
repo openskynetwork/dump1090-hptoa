@@ -49,15 +49,49 @@
 
 #include "dump1090.h"
 
+#include <stdarg.h>
+
 static int verbose_device_search(char *s);
 
 //
 // ============================= Utility functions ==========================
 //
-void sigintHandler(int dummy) {
+
+static void log_with_timestamp(const char *format, ...) __attribute__((format (printf, 1, 2) ));
+
+static void log_with_timestamp(const char *format, ...)
+{
+    char timebuf[128];
+    char msg[1024];
+    time_t now;
+    struct tm local;
+    va_list ap;
+
+    now = time(NULL);
+    localtime_r(&now, &local);
+    strftime(timebuf, 128, "%c %Z", &local);
+    timebuf[127] = 0;
+
+    va_start(ap, format);
+    vsnprintf(msg, 1024, format, ap);
+    va_end(ap);
+    msg[1023] = 0;
+
+    fprintf(stderr, "%s  %s\n", timebuf, msg);
+}
+
+static void sigintHandler(int dummy) {
     MODES_NOTUSED(dummy);
     signal(SIGINT, SIG_DFL);  // reset signal handler - bit extra safety
     Modes.exit = 1;           // Signal to threads that we are done
+    log_with_timestamp("Caught SIGINT, shutting down..\n");
+}
+
+static void sigtermHandler(int dummy) {
+    MODES_NOTUSED(dummy);
+    signal(SIGTERM, SIG_DFL); // reset signal handler - bit extra safety
+    Modes.exit = 1;           // Signal to threads that we are done
+    log_with_timestamp("Caught SIGTERM, shutting down..\n");
 }
 //
 // =============================== Terminal handling ========================
@@ -117,9 +151,8 @@ void modesInitConfig(void) {
     Modes.net_http_port           = MODES_NET_HTTP_PORT;
     Modes.net_fatsv_port          = MODES_NET_OUTPUT_FA_TSV_PORT;
     Modes.interactive_rows        = getTermRows();
-    Modes.interactive_delete_ttl  = MODES_INTERACTIVE_DELETE_TTL;
     Modes.interactive_display_ttl = MODES_INTERACTIVE_DISPLAY_TTL;
-    Modes.json_interval           = 1;
+    Modes.json_interval           = 1000;
     Modes.json_location_accuracy  = 1;
     Modes.maxRange                = 1852 * 300; // 300NM default max range
 }
@@ -174,7 +207,7 @@ void modesInit(void) {
       {Modes.net_sndbuf_size = MODES_NET_SNDBUF_MAX;}
 
     // Initialise the Block Timers to something half sensible
-    ftime(&Modes.stSystemTimeBlk);
+    clock_gettime(CLOCK_REALTIME, &Modes.stSystemTimeBlk);
     for (i = 0; i < MODES_ASYNC_BUF_NUMBER; i++)
       {Modes.stSystemTimeRTL[i] = Modes.stSystemTimeBlk;}
 
@@ -358,7 +391,7 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
     Modes.iDataIn &= (MODES_ASYNC_BUF_NUMBER-1); // Just incase!!!
 
     // Get the system time for this block
-    ftime(&Modes.stSystemTimeRTL[Modes.iDataIn]);
+    clock_gettime(CLOCK_REALTIME, &Modes.stSystemTimeRTL[Modes.iDataIn]);
 
     if (len > MODES_ASYNC_BUF_SIZE) {len = MODES_ASYNC_BUF_SIZE;}
 
@@ -431,7 +464,7 @@ void readDataFromFile(void) {
         Modes.iDataIn &= (MODES_ASYNC_BUF_NUMBER-1); // Just incase!!!
 
         // Get the system time for this block
-        ftime(&Modes.stSystemTimeRTL[Modes.iDataIn]);
+        clock_gettime(CLOCK_REALTIME, &Modes.stSystemTimeRTL[Modes.iDataIn]);
 
         // Queue the new data
         Modes.pData[Modes.iDataIn] = Modes.pFileData;
@@ -468,13 +501,13 @@ void *readerThreadEntryPoint(void *arg) {
                               MODES_ASYNC_BUF_SIZE);
 
             if (!Modes.exit) {
-                fprintf(stderr, "Warning: lost the connection to the RTLSDR device.\n");
+                log_with_timestamp("Warning: lost the connection to the RTLSDR device.");
                 rtlsdr_close(Modes.dev);
                 Modes.dev = NULL;
 
                 do {
                     sleep(5);
-                    fprintf(stderr, "Trying to reconnect to the RTLSDR device..\n");
+                    log_with_timestamp("Trying to reconnect to the RTLSDR device..");
                 } while (!Modes.exit && modesInitRTLSDR() < 0);
             }
         }
@@ -575,6 +608,7 @@ void showHelp(void) {
 "--write-json <dir>       Periodically write json output to <dir> (for serving by a separate webserver)\n"
 "--write-json-every <t>   Write json output every t seconds (default 1)\n"
 "--json-location-accuracy <n>  Accuracy of receiver location in json metadata: 0=no location, 1=approximate, 2=exact\n"
+"--oversample             Enable oversampling at 2.4MHz\n"
 "--help                   Show this help\n"
 "\n"
 "Debug mode flags: d = Log frames decoded with errors\n"
@@ -587,41 +621,6 @@ void showHelp(void) {
 MODES_DUMP1090_VARIANT " " MODES_DUMP1090_VERSION
     );
 }
-
-#ifdef _WIN32
-void showCopyright(void) {
-    uint64_t llTime = time(NULL) + 1;
-
-    printf(
-"-----------------------------------------------------------------------------\n"
-"|                        dump1090 ModeS Receiver         Ver : " MODES_DUMP1090_VERSION " |\n"
-"-----------------------------------------------------------------------------\n"
-"\n"
-" Copyright (C) 2012 by Salvatore Sanfilippo <antirez@gmail.com>\n"
-" Copyright (C) 2014 by Malcolm Robb <support@attavionics.com>\n"
-"\n"
-" All rights reserved.\n"
-"\n"
-" THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n"
-" ""AS IS"" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n"
-" LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\n"
-" A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\n"
-" HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\n"
-" SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\n"
-" LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\n"
-" DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\n"
-" THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n"
-" (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\n"
-" OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n"
-"\n"
-" For further details refer to <https://github.com/MalcolmRobb/dump1090>\n" 
-"\n"
-    );
-
-  // delay for 1 second to give the user a chance to read the copyright
-  while (llTime >= time(NULL)) {}
-}
-#endif
 
 static void display_total_stats(void)
 {
@@ -638,22 +637,19 @@ static void display_total_stats(void)
 // from the net, refreshing the screen in interactive mode, and so forth
 //
 void backgroundTasks(void) {
-    static time_t next_stats_display;
-    static time_t next_stats_update;
-    static time_t next_json, next_history;
+    static uint64_t next_stats_display;
+    static uint64_t next_stats_update;
+    static uint64_t next_json, next_history;
 
-    time_t now = time(NULL);
+    uint64_t now = mstime();
 
     icaoFilterExpire();
+    trackPeriodicUpdate();
 
     if (Modes.net) {
 	modesNetPeriodicWork();
     }    
 
-    // If Modes.aircrafts is not NULL, remove any stale aircraft
-    if (Modes.aircrafts) {
-        interactiveRemoveStaleAircrafts();
-    }
 
     // Refresh screen when in interactive mode
     if (Modes.interactive) {
@@ -667,7 +663,7 @@ void backgroundTasks(void) {
         int i;
 
         if (next_stats_update == 0) {
-            next_stats_update = now + 60;
+            next_stats_update = now + 60000;
         } else {
             Modes.stats_latest_1min = (Modes.stats_latest_1min + 1) % 15;
             Modes.stats_1min[Modes.stats_latest_1min] = Modes.stats_current;
@@ -689,11 +685,11 @@ void backgroundTasks(void) {
             if (Modes.json_dir)
                 writeJsonToFile("stats.json", generateStatsJson);
 
-            next_stats_update += 60;
+            next_stats_update += 60000;
         }
     }
 
-    if (Modes.stats > 0 && now >= next_stats_display) {
+    if (Modes.stats && now >= next_stats_display) {
         if (next_stats_display == 0) {
             next_stats_display = now + Modes.stats;
         } else {
@@ -802,7 +798,10 @@ int main(int argc, char **argv) {
 
     // Set sane defaults
     modesInitConfig();
-    signal(SIGINT, sigintHandler); // Define Ctrl/C handler (exit program)
+
+    // signal handlers:
+    signal(SIGINT, sigintHandler);
+    signal(SIGTERM, sigtermHandler);
 
     // Parse the command line options
     for (j = 1; j < argc; j++) {
@@ -838,13 +837,13 @@ int main(int argc, char **argv) {
             Modes.net = 1;
             Modes.net_only = 1;
        } else if (!strcmp(argv[j],"--net-heartbeat") && more) {
-            Modes.net_heartbeat_interval = atoi(argv[++j]);
+            Modes.net_heartbeat_interval = (uint64_t)(1000 * atof(argv[++j]));
        } else if (!strcmp(argv[j],"--net-ro-size") && more) {
             Modes.net_output_flush_size = atoi(argv[++j]);
         } else if (!strcmp(argv[j],"--net-ro-rate") && more) {
-            Modes.net_output_flush_interval = atoi(argv[++j]) / 15; // backwards compatibility
+            Modes.net_output_flush_interval = 1000 * atoi(argv[++j]) / 15; // backwards compatibility
         } else if (!strcmp(argv[j],"--net-ro-interval") && more) {
-            Modes.net_output_flush_interval = atoi(argv[++j]);
+            Modes.net_output_flush_interval = (uint64_t)(1000 * atof(argv[++j]));
         } else if (!strcmp(argv[j],"--net-ro-port") && more) {
             if (Modes.beast) // Required for legacy backward compatibility
                 {Modes.net_output_beast_port = atoi(argv[++j]);;}
@@ -879,7 +878,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j],"--interactive-rows") && more) {
             Modes.interactive_rows = atoi(argv[++j]);
         } else if (!strcmp(argv[j],"--interactive-ttl") && more) {
-            Modes.interactive_display_ttl = atoi(argv[++j]);
+            Modes.interactive_display_ttl = (uint64_t)(1000 * atof(argv[++j]));
         } else if (!strcmp(argv[j],"--lat") && more) {
             Modes.fUserLat = atof(argv[++j]);
         } else if (!strcmp(argv[j],"--lon") && more) {
@@ -905,9 +904,10 @@ int main(int argc, char **argv) {
                 f++;
             }
         } else if (!strcmp(argv[j],"--stats")) {
-            Modes.stats = -1;
+            if (!Modes.stats)
+                Modes.stats = (uint64_t)1 << 60; // "never"
         } else if (!strcmp(argv[j],"--stats-every") && more) {
-            Modes.stats = atoi(argv[++j]);
+            Modes.stats = (uint64_t) (1000 * atof(argv[++j]));
         } else if (!strcmp(argv[j],"--snip") && more) {
             snipMode(atoi(argv[++j]));
             exit(0);
@@ -929,9 +929,9 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j], "--write-json") && more) {
             Modes.json_dir = strdup(argv[++j]);
         } else if (!strcmp(argv[j], "--write-json-every") && more) {
-            Modes.json_interval = atoi(argv[++j]);
-            if (Modes.json_interval < 1)
-                Modes.json_interval = 1;
+            Modes.json_interval = (uint64_t)(1000 * atof(argv[++j]));
+            if (Modes.json_interval < 100) // 0.1s
+                Modes.json_interval = 100;
         } else if (!strcmp(argv[j], "--json-location-accuracy") && more) {
             Modes.json_location_accuracy = atoi(argv[++j]);
 #endif
@@ -961,6 +961,7 @@ int main(int argc, char **argv) {
     }
 
     // Initialization
+    log_with_timestamp("%s %s starting up.", MODES_DUMP1090_VARIANT, MODES_DUMP1090_VERSION);
     modesInit();
 
     if (Modes.net_only) {
@@ -986,7 +987,14 @@ int main(int argc, char **argv) {
     if (Modes.net) modesInitNet();
 
     // init stats:
-    Modes.stats_current.start = Modes.stats_current.end = time(NULL);
+    Modes.stats_current.start = Modes.stats_current.end =
+        Modes.stats_alltime.start = Modes.stats_alltime.end =
+        Modes.stats_periodic.start = Modes.stats_periodic.end =
+        Modes.stats_5min.start = Modes.stats_5min.end =
+        Modes.stats_15min.start = Modes.stats_15min.end = mstime();
+
+    for (j = 0; j < 15; ++j)
+        Modes.stats_1min[j].start = Modes.stats_1min[j].end = Modes.stats_current.start;
 
     // write initial json files so they're not missing
     writeJsonToFile("receiver.json", generateReceiverJson);
@@ -995,103 +1003,113 @@ int main(int argc, char **argv) {
 
     // If the user specifies --net-only, just run in order to serve network
     // clients without reading data from the RTL device
-    while (Modes.net_only) {
-        struct timespec start_time;
+    if (Modes.net_only) {
+        while (!Modes.exit) {
+            struct timespec start_time;
 
-        if (Modes.exit) {
-            display_total_stats();
-            exit(0); // If we exit net_only nothing further in main()
-        }
-
-        start_cpu_timing(&start_time);
-        backgroundTasks();
-        end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
-
-        usleep(100000);
-    }
-
-    // Create the thread that will read the data from the device.
-    pthread_create(&Modes.reader_thread, NULL, readerThreadEntryPoint, NULL);
-    pthread_mutex_lock(&Modes.data_mutex);
-
-    while (Modes.exit == 0) {
-        struct timespec start_time;
-
-        if (Modes.iDataReady == 0) {
-            pthread_cond_wait(&Modes.data_cond,&Modes.data_mutex); // This unlocks Modes.data_mutex, and waits for Modes.data_cond 
-            continue;                                              // Once (Modes.data_cond) occurs, it locks Modes.data_mutex
-        }
-
-        // copy out reader CPU time and reset it
-        add_timespecs(&Modes.reader_cpu_accumulator, &Modes.stats_current.reader_cpu, &Modes.stats_current.reader_cpu);
-        Modes.reader_cpu_accumulator.tv_sec = 0;
-        Modes.reader_cpu_accumulator.tv_nsec = 0;
-
-        // Modes.data_mutex is Locked, and (Modes.iDataReady != 0)
-        if (Modes.iDataReady) { // Check we have new data, just in case!!
             start_cpu_timing(&start_time);
+            backgroundTasks();
+            end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
 
-            Modes.iDataOut &= (MODES_ASYNC_BUF_NUMBER-1); // Just incase
+            usleep(100000);
+        }
+    } else {
+        // Create the thread that will read the data from the device.
+        pthread_mutex_lock(&Modes.data_mutex);
+        pthread_create(&Modes.reader_thread, NULL, readerThreadEntryPoint, NULL);
 
-            // Translate the next lot of I/Q samples into Modes.magnitude
-            computeMagnitudeVector(Modes.pData[Modes.iDataOut]);
+        while (Modes.exit == 0) {
+            struct timespec start_time;
 
-            Modes.stSystemTimeBlk = Modes.stSystemTimeRTL[Modes.iDataOut];
+            if (Modes.iDataReady == 0) {
+                /* wait for more data.
+                 * we should be getting data every 50-60ms. wait for max 100ms before we give up and do some background work.
+                 * this is fairly aggressive as all our network I/O runs out of the background work!
+                 */
 
-            // Update the input buffer pointer queue
-            Modes.iDataOut   = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataOut + 1); 
-            Modes.iDataReady = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataIn - Modes.iDataOut);   
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_nsec += 100000000;
+                normalize_timespec(&ts);
 
-            // If we lost some blocks, correct the timestamp
-            if (Modes.iDataLost) {
-                Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES * 6 * Modes.iDataLost);
-                Modes.stats_current.blocks_dropped += Modes.iDataLost;
-                Modes.iDataLost = 0;
+                pthread_cond_timedwait(&Modes.data_cond, &Modes.data_mutex, &ts); // This unlocks Modes.data_mutex, and waits for Modes.data_cond
+                // Once (Modes.data_cond) occurs, it locks Modes.data_mutex
             }
 
-            // It's safe to release the lock now
-            pthread_cond_signal (&Modes.data_cond);
-            pthread_mutex_unlock(&Modes.data_mutex);
+            // Modes.data_mutex is Locked, and possibly (Modes.iDataReady != 0)
 
-            // Process data after releasing the lock, so that the capturing
-            // thread can read data while we perform computationally expensive
-            // stuff at the same time.
+            // copy out reader CPU time and reset it
+            add_timespecs(&Modes.reader_cpu_accumulator, &Modes.stats_current.reader_cpu, &Modes.stats_current.reader_cpu);
+            Modes.reader_cpu_accumulator.tv_sec = 0;
+            Modes.reader_cpu_accumulator.tv_nsec = 0;
 
-            if (Modes.oversample)
-                demodulate2400(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
-            else
-                demodulate2000(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
+            if (Modes.iDataReady) { // Check we have new data, just in case!!
+                start_cpu_timing(&start_time);
 
-            // Update the timestamp ready for the next block
-            if (Modes.oversample)
-                Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES*5);
-            else
-                Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES*6);
-            Modes.stats_current.blocks_processed++;
+                Modes.iDataOut &= (MODES_ASYNC_BUF_NUMBER-1); // Just incase
 
-            end_cpu_timing(&start_time, &Modes.stats_current.demod_cpu);
-        } else {
-            pthread_cond_signal (&Modes.data_cond);
-            pthread_mutex_unlock(&Modes.data_mutex);
+                // Translate the next lot of I/Q samples into Modes.magnitude
+                computeMagnitudeVector(Modes.pData[Modes.iDataOut]);
+
+                Modes.stSystemTimeBlk = Modes.stSystemTimeRTL[Modes.iDataOut];
+
+                // Update the input buffer pointer queue
+                Modes.iDataOut   = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataOut + 1); 
+                Modes.iDataReady = (MODES_ASYNC_BUF_NUMBER-1) & (Modes.iDataIn - Modes.iDataOut);   
+
+                // If we lost some blocks, correct the timestamp
+                if (Modes.iDataLost) {
+                    Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES * 6 * Modes.iDataLost);
+                    Modes.stats_current.blocks_dropped += Modes.iDataLost;
+                    Modes.iDataLost = 0;
+                }
+
+                // It's safe to release the lock now
+                pthread_cond_signal (&Modes.data_cond);
+                pthread_mutex_unlock(&Modes.data_mutex);
+
+                // Process data after releasing the lock, so that the capturing
+                // thread can read data while we perform computationally expensive
+                // stuff at the same time.
+
+                if (Modes.oversample)
+                    demodulate2400(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
+                else
+                    demodulate2000(Modes.magnitude, MODES_ASYNC_BUF_SAMPLES);
+
+                // Update the timestamp ready for the next block
+                if (Modes.oversample)
+                    Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES*5);
+                else
+                    Modes.timestampBlk += (MODES_ASYNC_BUF_SAMPLES*6);
+                Modes.stats_current.blocks_processed++;
+
+                end_cpu_timing(&start_time, &Modes.stats_current.demod_cpu);
+            } else {
+                pthread_cond_signal (&Modes.data_cond);
+                pthread_mutex_unlock(&Modes.data_mutex);
+            }
+
+            start_cpu_timing(&start_time);
+            backgroundTasks();
+            end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
+
+            pthread_mutex_lock(&Modes.data_mutex);
         }
 
-        start_cpu_timing(&start_time);
-        backgroundTasks();
-        end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
+        pthread_mutex_unlock(&Modes.data_mutex);
 
-        pthread_mutex_lock(&Modes.data_mutex);
+        pthread_join(Modes.reader_thread,NULL);     // Wait on reader thread exit
+        pthread_cond_destroy(&Modes.data_cond);     // Thread cleanup - only after the reader thread is dead!
+        pthread_mutex_destroy(&Modes.data_mutex);
     }
-
-    pthread_mutex_unlock(&Modes.data_mutex);
 
     // If --stats were given, print statistics
     if (Modes.stats) {
         display_total_stats();
     }
 
-    pthread_join(Modes.reader_thread,NULL);     // Wait on reader thread exit
-    pthread_cond_destroy(&Modes.data_cond);     // Thread cleanup - only after the reader thread is dead!
-    pthread_mutex_destroy(&Modes.data_mutex);
+    log_with_timestamp("Normal exit.");
 
 #ifndef _WIN32
     pthread_exit(0);
