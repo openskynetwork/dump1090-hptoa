@@ -40,6 +40,8 @@ var DEGREES='\u00b0'
 var UP_TRIANGLE='\u25b2'; // U+25B2 BLACK UP-POINTING TRIANGLE
 var DOWN_TRIANGLE='\u25bc'; // U+25BC BLACK DOWN-POINTING TRIANGLE
 
+var PositionHeatmapArray = new google.maps.MVCArray();
+
 function processReceiverUpdate(data) {
 	// Loop through all the planes in the data packet
         var now = data.now;
@@ -418,6 +420,14 @@ function initialize_map() {
 	}));
 
 	GoogleMap.mapTypes.set("dark_map", styledMap);
+
+        // Heatmap layer
+        var heatmap = new google.maps.visualization.HeatmapLayer({
+          data: PositionHeatmapArray,
+          dissipating : false,
+          radius : 0.05
+        });
+        heatmap.setMap(GoogleMap);
 	
 	// Listeners for newly created Map
         google.maps.event.addListener(GoogleMap, 'center_changed', function() {

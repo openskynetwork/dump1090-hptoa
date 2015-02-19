@@ -106,6 +106,8 @@ PlaneObject.prototype.updateTrack = function(estimate_time) {
         
         if (!new_data)
                 return false;
+
+        PositionHeatmapArray.push(here);
         
         if (est_track) {
                 if (!lastseg.estimated) {
