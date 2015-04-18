@@ -282,6 +282,7 @@ void modesSendRawOutput(struct modesMessage *mm) {
         /* timestamp, big-endian */
         sprintf(p, "@%012" PRIx64,
                 mm->timestampMsg);
+        p += 13;
         Modes.rawOutUsed += 12; // additional 12 characters for timestamp
     } else
         *p++ = '*';
