@@ -217,6 +217,7 @@
 #include "crc.h"
 #include "demod_2000.h"
 #include "demod_2400.h"
+#include "demod_20m.h"
 #include "stats.h"
 #include "cpr.h"
 #include "icao_filter.h"

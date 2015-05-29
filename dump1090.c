@@ -167,7 +167,18 @@ void modesInit(void) {
     pthread_cond_init(&Modes.data_cond,NULL);
 
     // Allocate the various buffers used by Modes
-    Modes.trailing_samples = (Modes.oversample ? (MODES_OS_PREAMBLE_SAMPLES + MODES_OS_LONG_MSG_SAMPLES) : (MODES_PREAMBLE_SAMPLES + MODES_LONG_MSG_SAMPLES)) + 16;
+    switch (Modes.oversample) {
+    case 0:
+        Modes.trailing_samples = (MODES_PREAMBLE_US + MODES_LONG_MSG_BITS + 8) * 2;
+        break;
+    case 1:
+        Modes.trailing_samples = (MODES_PREAMBLE_US + MODES_LONG_MSG_BITS + 8) * 12 / 5;
+        break;
+    case 2:
+        Modes.trailing_samples = (MODES_PREAMBLE_US + MODES_LONG_MSG_BITS + 8) * 20;
+        break;
+    }
+
     if ( ((Modes.maglut     = (uint16_t *) malloc(sizeof(uint16_t) * 256 * 256)                                 ) == NULL) ||
          ((Modes.log10lut   = (uint16_t *) malloc(sizeof(uint16_t) * 256 * 256)                                 ) == NULL) )
     {
@@ -445,12 +456,23 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
     pthread_mutex_unlock(&Modes.data_mutex);
 
     // Compute the sample timestamp and system timestamp for the start of the block
-    if (Modes.oversample) {
-        outbuf->sampleTimestamp = lastbuf->sampleTimestamp + (lastbuf->length + outbuf->dropped) * 5;
-        block_duration = slen * 5000U / 12;
-    } else {
+    switch (Modes.oversample) {
+    case 0:
         outbuf->sampleTimestamp = lastbuf->sampleTimestamp + (lastbuf->length + outbuf->dropped) * 6;
-        block_duration = slen * 6000U / 12;
+        block_duration = slen * 500;
+        break;
+    case 1:
+        outbuf->sampleTimestamp = lastbuf->sampleTimestamp + (lastbuf->length + outbuf->dropped) * 5;
+        block_duration = slen * 1250 / 3;
+        break;
+    case 2:
+        outbuf->sampleTimestamp = lastbuf->sampleTimestamp + (lastbuf->length + outbuf->dropped) * 12 / 20;
+        block_duration = slen * 50;
+        break;
+    default:
+        outbuf->sampleTimestamp = 0;
+        block_duration = 0;
+        break;
     }
 
     // Get the approx system time for the start of this block
@@ -539,10 +561,16 @@ void readDataFromFile(void) {
         pthread_mutex_unlock(&Modes.data_mutex);
 
         // Compute the sample timestamp and system timestamp for the start of the block
-        if (Modes.oversample) {
-            outbuf->sampleTimestamp = lastbuf->sampleTimestamp + lastbuf->length * 5;
-        } else {
+        switch (Modes.oversample) {
+        case 0:
             outbuf->sampleTimestamp = lastbuf->sampleTimestamp + lastbuf->length * 6;
+            break;
+        case 1:
+            outbuf->sampleTimestamp = lastbuf->sampleTimestamp + lastbuf->length * 5;
+            break;
+        case 2:
+            outbuf->sampleTimestamp = lastbuf->sampleTimestamp + lastbuf->length * 12 / 20;
+            break;
         }
 
         // Copy trailing data from last block (or reset if not valid)
@@ -614,7 +642,18 @@ void readDataFromFile(void) {
                 ;
 
             // compute the time we can deliver the next buffer.
-            next_buffer_delivery.tv_nsec += (outbuf->length * (Modes.oversample ? 5000 : 6000) / 12);
+            switch (Modes.oversample) {
+            case 0:
+                next_buffer_delivery.tv_nsec += (outbuf->length * 500);
+                break;
+            case 1:
+                next_buffer_delivery.tv_nsec += (outbuf->length * 1230 / 3);
+                break;
+            case 2:
+                next_buffer_delivery.tv_nsec += (outbuf->length * 50);
+                break;
+            }
+
             normalize_timespec(&next_buffer_delivery);
         }
 
@@ -1093,7 +1132,7 @@ int main(int argc, char **argv) {
             Modes.interactive = 1;
             Modes.interactive_rtl1090 = 1;
         } else if (!strcmp(argv[j],"--oversample")) {
-            Modes.oversample = 1;
+            ++Modes.oversample;
 #ifndef _WIN32
         } else if (!strcmp(argv[j], "--write-json") && more) {
             Modes.json_dir = strdup(argv[++j]);
@@ -1224,10 +1263,17 @@ int main(int argc, char **argv) {
                 // stuff at the same time.
                 pthread_mutex_unlock(&Modes.data_mutex);
 
-                if (Modes.oversample)
-                    demodulate2400(buf);
-                else
+                switch (Modes.oversample) {
+                case 0:
                     demodulate2000(buf);
+                    break;
+                case 1:
+                    demodulate2400(buf);
+                    break;
+                case 2:
+                    demodulate20m(buf);
+                    break;
+                }
 
                 Modes.stats_current.samples_processed += buf->length;
                 Modes.stats_current.samples_dropped += buf->dropped;
