@@ -663,32 +663,42 @@ static int check_errors(int rc, const char *what)
     return 1;
 }
 
-static int checked_read(int fd, void *data, size_t count, const char *what)
+static int checked_read(int fd, uint8_t *data, size_t count, const char *what)
 {
-    ssize_t rc = read(fd, data, count);
-    if (rc < 0) {
-        fprintf(stderr, "archiver: %s failed: %s\n", what, strerror(errno));
-        return 0;
-    }
+    while (count > 0) {
+        ssize_t rc = read(fd, data, count);
+        if (rc < 0) {
+            fprintf(stderr, "archiver: %s failed: %s\n", what, strerror(errno));
+            return 0;
+        }
 
-    if ((size_t)rc != count) {
-        fprintf(stderr, "archiver: %s failed: short read\n", what);
-        return 0;
+        if (rc == 0) {
+            fprintf(stderr, "archiver: %s failed: short read\n", what);
+            return 0;
+        }
+
+        count -= rc;
+        data += rc;
     }
 
     return 1;
 }
 
-static int checked_write(int fd, void *data, size_t count, const char *what) {
-    ssize_t rc = write(fd, data, count);
-    if (rc < 0) {
-        fprintf(stderr, "archiver: %s failed: %s\n", what, strerror(errno));
-        return 0;
-    }
+static int checked_write(int fd, uint8_t *data, size_t count, const char *what) {
+    while (count > 0) {
+        ssize_t rc = write(fd, data, count);
+        if (rc < 0) {
+            fprintf(stderr, "archiver: %s failed: %s\n", what, strerror(errno));
+            return 0;
+        }
 
-    if ((size_t)rc != count) {
-        fprintf(stderr, "archiver: %s failed: short write\n", what);
-        return 0;
+        if (rc == 0) {
+            fprintf(stderr, "archiver: %s failed: short write\n", what);
+            return 0;
+        }
+
+        count -= rc;
+        data += rc;
     }
 
     return 1;
