@@ -777,6 +777,29 @@ static int zeroTrailingData()
     return 1;
 }
 
+static int validateHeader()
+{
+    uint8_t file_header[FILE_HEADER_SIZE];
+    uint32_t stored_numblocks;
+    uint32_t stored_blocksize;
+
+    /* validate header */
+    if (!check_errors(lseek(dataFd, 0, SEEK_SET), "data lseek"))
+        return 0;
+
+    if (!checked_read(dataFd, file_header, FILE_HEADER_SIZE, "data file header read"))
+        return 0;
+
+    stored_numblocks = get_uint32(file_header);
+    stored_blocksize = get_uint32(file_header+4);
+
+    if (stored_numblocks != archive_file_num_blocks || stored_blocksize != BLOCK_SIZE) {
+        fprintf(stderr, "archiver: data file header does not match current settings\n");
+        return 0;
+    }
+
+    return 1;
+}
 
 /* read the index and find where we should start appending from */
 static int recoverFromDisk()
@@ -788,6 +811,9 @@ static int recoverFromDisk()
     unsigned highest_sequence = 0;
     unsigned selected_block_id = 0;
     unsigned selected_block_offset = 0;
+
+    if (!validateHeader())
+        return 0;
 
     if (!check_errors(lseek(indexFd, 0, SEEK_SET), "index lseek"))
         return 0;
@@ -932,24 +958,6 @@ static int openFiles() {
             goto error;
 
         recovery = 0;
-    }
-
-    if (recovery) {
-        /* validate header */
-        uint8_t file_header[FILE_HEADER_SIZE];
-        uint32_t stored_numblocks;
-        uint32_t stored_blocksize;
-
-        if (!checked_read(dataFd, file_header, FILE_HEADER_SIZE, "data file header read"))
-            goto error;
-
-        stored_numblocks = get_uint32(file_header);
-        stored_blocksize = get_uint32(file_header+4);
-
-        if (stored_numblocks != archive_file_num_blocks || stored_blocksize != BLOCK_SIZE) {
-            fprintf(stderr, "archiver: data file header does not match current settings\n");
-            recovery = 0;
-        }
     }
 
     if (recovery) {
