@@ -77,12 +77,11 @@ static archive_inmem *getInmemState(struct modesMessage *message);
 static int flushInmemEntry(archive_inmem *inmem);
 
 static int writeArchiveMessage(uint8_t *data, unsigned len);
-static int writeArchiveData(uint8_t *data, unsigned len);
-static int markMessageStart();
+static int writeArchiveData(uint8_t *data, unsigned len, int partial);
 static int writeToCurrentBlock(void *data, uint32_t len);
 static int zeroTrailingData();
-static int nextBlock();
-static int writeIndexEntry(uint32_t block_id, uint32_t block_sequence, uint32_t first_message_offset);
+static void nextBlock();
+static int writeCurrentIndexEntry(uint32_t first_message_offset);
 
 static int writeLock();
 static int writeUnlock();
@@ -550,7 +549,6 @@ static uint32_t archive_file_num_blocks = 50000; /* about 200M */
 static uint32_t current_block_id;
 static uint32_t current_block_offset;
 static uint32_t current_block_sequence;
-static uint16_t current_block_index_entry_valid;
 
 /* Write an application message to the archive file;
  * this adds the CRC/length header and maintains the indexes etc.
@@ -567,17 +565,10 @@ static int writeArchiveMessage(uint8_t *data, unsigned len)
     set_uint32(header, len);
     set_uint32(header+4, datacrc);
 
-    if (!markMessageStart())
+    if (!writeArchiveData(header, MESSAGE_HEADER_SIZE, 1))
         return 0;
 
-    if (!writeArchiveData(header, MESSAGE_HEADER_SIZE))
-        return 0;
-
-    if (!writeArchiveData(data, len))
-        return 0;
-
-    /* proactively update the index for the next message */
-    if (!markMessageStart())
+    if (!writeArchiveData(data, len, 0))
         return 0;
 
     return 1;
@@ -587,8 +578,9 @@ static int writeArchiveMessage(uint8_t *data, unsigned len)
  * initializing new blocks as needed.
  * returns 1 if all is OK
  */
-static int writeArchiveData(uint8_t *data, unsigned len)
+static int writeArchiveData(uint8_t *data, unsigned len, int partial)
 {
+    static int index_write_pending = 0;
     unsigned int c;
 
     /* write the current block */
@@ -599,21 +591,37 @@ static int writeArchiveData(uint8_t *data, unsigned len)
 
     if (current_block_offset < BLOCK_SIZE) {
         /* there is still space left in the current block */
+        if (!partial && index_write_pending) {
+            /* need to write an index entry, and this is a message boundary */
+            if (!writeCurrentIndexEntry(current_block_offset))
+                return 0;
+            if (!zeroTrailingData())
+                return 0;
+            index_write_pending = 0;
+        }
         return 1;
     }
 
-    if (!nextBlock())
-        return 0;
+    /* filled the current block */
+
+    if (index_write_pending) {
+        /* need to write an index entry, and this block has no message boundaries */
+        writeCurrentIndexEntry(0xFFFF);
+        index_write_pending = 0;
+    }
+
+    nextBlock();
 
     /* write some complete blocks */
     while (len >= BLOCK_SIZE) {
+        if (!writeCurrentIndexEntry(0xFFFF))
+            return 0;
         writeToCurrentBlock(data, BLOCK_SIZE);
 
         len -= BLOCK_SIZE;
         data += BLOCK_SIZE;
 
-        if (!nextBlock())
-            return 0;
+        nextBlock();
     }
 
     /* write the trailing partial block
@@ -623,33 +631,27 @@ static int writeArchiveData(uint8_t *data, unsigned len)
      */
     if (!writeToCurrentBlock(data, len))
         return 0;
-    if (!zeroTrailingData())
-        return 0;
+
+    if (partial) {
+        /* we started a new block, but we don't know if it has message boundaries yet */
+        index_write_pending = 1;
+    } else {
+        /* we started a new block, and we know where the first message boundary is */
+        if (!writeCurrentIndexEntry(current_block_offset))
+            return 0;
+        if (!zeroTrailingData())
+            return 0;
+    }
 
     return 1;
 }
 
-/* advance to the next block and initialize it */
-static int nextBlock()
+/* advance to the next block */
+static void nextBlock()
 {
     current_block_id = (current_block_id + 1) % archive_file_num_blocks;
     current_block_offset = 0;
     ++current_block_sequence;
-    current_block_index_entry_valid = 0;
-
-    return writeIndexEntry(current_block_id, current_block_sequence, 0xFFFF);
-}
-
-/* called when we are at the start of a message. Update the index entry
- * if this is the first start point for the current block
- */
-static int markMessageStart()
-{
-    if (current_block_index_entry_valid)
-        return 1;
-
-    current_block_index_entry_valid = 1;
-    return writeIndexEntry(current_block_id, current_block_sequence, current_block_offset);
 }
 
 static int check_errors(int rc, const char *what)
@@ -708,19 +710,19 @@ static int checked_write(int fd, uint8_t *data, size_t count, off_t offset, cons
 #define INDEX_OFFSET(x) (FILE_HEADER_SIZE + (x) * INDEX_ENTRY_SIZE)
 #define DATA_OFFSET(x) (INDEX_OFFSET(archive_file_num_blocks) + (x) * BLOCK_SIZE)
 
-/* write an index entry with the given values */
-static int writeIndexEntry(uint32_t block_id, uint32_t block_sequence, uint32_t first_message_offset)
+/* write an index entry with the given offset for the current block */
+static int writeCurrentIndexEntry(uint32_t first_message_offset)
 {
     uint8_t entry[INDEX_ENTRY_SIZE];
 
     assert (first_message_offset < BLOCK_SIZE || first_message_offset == 0xFFFF);
 
-    set_uint32(entry, block_sequence);
+    set_uint32(entry, current_block_sequence);
     set_uint16(entry+4, (uint16_t)first_message_offset);
 
-    DEBUG("writing index entry for block %u sequence %u offset %u", block_id, block_sequence, first_message_offset);
+    DEBUG("writing index entry for block %u sequence %u offset %u", current_block_id, current_block_sequence, first_message_offset);
 
-    if (!checked_write(dataFd, entry, INDEX_ENTRY_SIZE, INDEX_OFFSET(block_id), "index file write"))
+    if (!checked_write(dataFd, entry, INDEX_ENTRY_SIZE, INDEX_OFFSET(current_block_id), "index file write"))
         return 0;
 
     return 1;
@@ -885,7 +887,6 @@ static int recoverFromDisk()
     current_block_id = selected_block_id;
     current_block_offset = selected_block_offset;
     current_block_sequence = highest_sequence;
-    current_block_index_entry_valid = 1;
     return 1;
 }
 
@@ -965,8 +966,14 @@ static int openFiles() {
         current_block_id = 0;
         current_block_offset = 0;
         current_block_sequence = 1;
-        current_block_index_entry_valid = 0;
     }
+
+    /* set up the current block */
+    if (!zeroTrailingData())
+        goto error;
+
+    if (!writeCurrentIndexEntry(current_block_offset))
+        goto error;
 
     /* release the little writing lock, but keep the archive file ownership one */
     if (!check_errors(flock(dataFd, LOCK_UN), "unlocking data file"))
