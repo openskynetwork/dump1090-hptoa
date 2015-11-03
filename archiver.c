@@ -542,7 +542,7 @@ static int flushInmemEntry(archive_inmem *inmem)
  */
 
 #define BLOCK_SIZE 4096
-#define FILE_HEADER_SIZE 8
+#define FILE_HEADER_SIZE 12
 #define MESSAGE_HEADER_SIZE 8
 #define INDEX_ENTRY_SIZE 6
 
@@ -771,10 +771,12 @@ static int zeroTrailingData()
 }
 
 #define INDEX_BATCH 1000
+#define DISK_VERSION 0x00010000
 
 static int validateHeader()
 {
     uint8_t file_header[FILE_HEADER_SIZE];
+    uint32_t stored_version;
     uint32_t stored_numblocks;
     uint32_t stored_blocksize;
 
@@ -782,10 +784,11 @@ static int validateHeader()
     if (!checked_read(dataFd, file_header, FILE_HEADER_SIZE, 0, "data file header read"))
         return 0;
 
-    stored_numblocks = get_uint32(file_header);
-    stored_blocksize = get_uint32(file_header+4);
+    stored_version = get_uint32(file_header);
+    stored_numblocks = get_uint32(file_header+4);
+    stored_blocksize = get_uint32(file_header+8);
 
-    if (stored_numblocks != archive_file_num_blocks || stored_blocksize != BLOCK_SIZE) {
+    if (stored_version != DISK_VERSION || stored_numblocks != archive_file_num_blocks || stored_blocksize != BLOCK_SIZE) {
         fprintf(stderr, "archiver: data file header does not match current settings\n");
         return 0;
     }
@@ -963,8 +966,9 @@ static int openFiles() {
 
         /* rewrite datafile header */
 
-        set_uint32(file_header, archive_file_num_blocks);
-        set_uint32(file_header+4, BLOCK_SIZE);
+        set_uint32(file_header, DISK_VERSION);
+        set_uint32(file_header+4, archive_file_num_blocks);
+        set_uint32(file_header+8, BLOCK_SIZE);
 
         if (!checked_write(dataFd, file_header, FILE_HEADER_SIZE, 0, "data file header write"))
             goto error;
