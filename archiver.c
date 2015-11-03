@@ -30,7 +30,6 @@
 
 static int lockFd = -1;
 static int dataFd = -1;
-static int indexFd = -1;
 
 typedef uint32_t uint24_t;
 
@@ -706,8 +705,8 @@ static int checked_write(int fd, uint8_t *data, size_t count, off_t offset, cons
     return 1;
 }
 
-#define DATA_OFFSET(x) (FILE_HEADER_SIZE + (x) * BLOCK_SIZE)
-#define INDEX_OFFSET(x) ((x) * INDEX_ENTRY_SIZE)
+#define INDEX_OFFSET(x) (FILE_HEADER_SIZE + (x) * INDEX_ENTRY_SIZE)
+#define DATA_OFFSET(x) (INDEX_OFFSET(archive_file_num_blocks) + (x) * BLOCK_SIZE)
 
 /* write an index entry with the given values */
 static int writeIndexEntry(uint32_t block_id, uint32_t block_sequence, uint32_t first_message_offset)
@@ -721,7 +720,7 @@ static int writeIndexEntry(uint32_t block_id, uint32_t block_sequence, uint32_t 
 
     DEBUG("writing index entry for block %u sequence %u offset %u", block_id, block_sequence, first_message_offset);
 
-    if (!checked_write(indexFd, entry, INDEX_ENTRY_SIZE, INDEX_OFFSET(block_id), "index file write"))
+    if (!checked_write(dataFd, entry, INDEX_ENTRY_SIZE, INDEX_OFFSET(block_id), "index file write"))
         return 0;
 
     return 1;
@@ -815,7 +814,7 @@ static int recoverFromDisk()
         uint32_t sequence;
         uint16_t offset;
 
-        if (!checked_read(indexFd, entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(block_id), "index read"))
+        if (!checked_read(dataFd, entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(block_id), "index read"))
             return 0;
 
         for (i = 0; i < len; ++i) {
@@ -894,7 +893,6 @@ static int openFiles() {
     struct stat st;
     int recovery = 1;
     uint32_t expected_data_size = DATA_OFFSET(archive_file_num_blocks);
-    uint32_t expected_index_size = INDEX_OFFSET(archive_file_num_blocks);
 
     /* open lockfile, get mega-writing lock */
     if (!check_errors(lockFd = open("/tmp/archive.lock", O_RDWR | O_CREAT, 0664), "opening lock file"))
@@ -931,24 +929,6 @@ static int openFiles() {
         recovery = 0;
     }
 
-    /* open index */
-    if (!check_errors(indexFd = open("/tmp/archive.index", O_RDWR | O_CREAT, 0664), "opening index file"))
-        goto error;
-
-    /* check size */
-    if (!check_errors(fstat(indexFd, &st), "checking index file size"))
-        goto error;
-
-    if (st.st_size != (off_t)expected_index_size) {
-        fprintf(stderr, "archiver: adjusting index file size from %u to %u\n", (unsigned)st.st_size, (unsigned)expected_index_size);
-
-        /* adjust size */
-        if (!check_errors(ftruncate(indexFd, expected_index_size), "adjusting index file size"))
-            goto error;
-
-        recovery = 0;
-    }
-
     if (recovery) {
         recovery = recoverFromDisk();
     }
@@ -978,7 +958,7 @@ static int openFiles() {
         memset(index_entry, 0, sizeof(index_entry));
         for (i = 0; i < archive_file_num_blocks; i += INDEX_BATCH) {
             unsigned len = min(INDEX_BATCH, archive_file_num_blocks - i);
-            if (!checked_write(indexFd, index_entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(i), "index file write"))
+            if (!checked_write(dataFd, index_entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(i), "index file write"))
                 goto error;
         }
 
@@ -1009,11 +989,6 @@ static void closeFiles() {
     if (dataFd >= 0) {
         close(dataFd);
         dataFd = -1;
-    }
-
-    if (indexFd >= 0) {
-        close(indexFd);
-        indexFd = -1;
     }
 }
 
