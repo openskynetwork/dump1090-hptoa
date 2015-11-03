@@ -777,6 +777,8 @@ static int zeroTrailingData()
     return 1;
 }
 
+#define INDEX_BATCH 1000
+
 static int validateHeader()
 {
     uint8_t file_header[FILE_HEADER_SIZE];
@@ -804,7 +806,7 @@ static int validateHeader()
 /* read the index and find where we should start appending from */
 static int recoverFromDisk()
 {
-    uint8_t entry[INDEX_ENTRY_SIZE * 1000];
+    uint8_t entry[INDEX_ENTRY_SIZE * INDEX_BATCH];
     unsigned block_id;
 
     unsigned highest_sequence = 0;
@@ -817,9 +819,9 @@ static int recoverFromDisk()
     if (!check_errors(lseek(indexFd, 0, SEEK_SET), "index lseek"))
         return 0;
 
-    for (block_id = 0; block_id < archive_file_num_blocks; block_id += 1000) {
+    for (block_id = 0; block_id < archive_file_num_blocks; block_id += INDEX_BATCH) {
         unsigned i;
-        unsigned len = min(1000, archive_file_num_blocks - block_id);
+        unsigned len = min(INDEX_BATCH, archive_file_num_blocks - block_id);
         uint32_t sequence;
         uint16_t offset;
 
@@ -967,7 +969,7 @@ static int openFiles() {
     if (!recovery) {
         uint32_t i;
         uint8_t file_header[FILE_HEADER_SIZE];
-        uint8_t index_entry[INDEX_ENTRY_SIZE * 1000];
+        uint8_t index_entry[INDEX_ENTRY_SIZE * INDEX_BATCH];
 
         /* something went wrong during recovery (no data there, or the settings changed, etc)
          * so start from scratch
@@ -992,8 +994,8 @@ static int openFiles() {
             goto error;
 
         memset(index_entry, 0, sizeof(index_entry));
-        for (i = 0; i < archive_file_num_blocks; i += 1000) {
-            unsigned len = min(1000, archive_file_num_blocks - i);
+        for (i = 0; i < archive_file_num_blocks; i += INDEX_BATCH) {
+            unsigned len = min(INDEX_BATCH, archive_file_num_blocks - i);
             if (!checked_write(indexFd, index_entry, INDEX_ENTRY_SIZE * len, "index file write"))
                 goto error;
         }
