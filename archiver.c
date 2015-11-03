@@ -663,10 +663,10 @@ static int check_errors(int rc, const char *what)
     return 1;
 }
 
-static int checked_read(int fd, uint8_t *data, size_t count, const char *what)
+static int checked_read(int fd, uint8_t *data, size_t count, off_t offset, const char *what)
 {
     while (count > 0) {
-        ssize_t rc = read(fd, data, count);
+        ssize_t rc = pread(fd, data, count, offset);
         if (rc < 0) {
             fprintf(stderr, "archiver: %s failed: %s\n", what, strerror(errno));
             return 0;
@@ -679,14 +679,15 @@ static int checked_read(int fd, uint8_t *data, size_t count, const char *what)
 
         count -= rc;
         data += rc;
+        offset += rc;
     }
 
     return 1;
 }
 
-static int checked_write(int fd, uint8_t *data, size_t count, const char *what) {
+static int checked_write(int fd, uint8_t *data, size_t count, off_t offset, const char *what) {
     while (count > 0) {
-        ssize_t rc = write(fd, data, count);
+        ssize_t rc = pwrite(fd, data, count, offset);
         if (rc < 0) {
             fprintf(stderr, "archiver: %s failed: %s\n", what, strerror(errno));
             return 0;
@@ -699,6 +700,7 @@ static int checked_write(int fd, uint8_t *data, size_t count, const char *what) 
 
         count -= rc;
         data += rc;
+        offset += rc;
     }
 
     return 1;
@@ -719,10 +721,7 @@ static int writeIndexEntry(uint32_t block_id, uint32_t block_sequence, uint32_t 
 
     DEBUG("writing index entry for block %u sequence %u offset %u", block_id, block_sequence, first_message_offset);
 
-    if (!check_errors(lseek(indexFd, INDEX_OFFSET(block_id), SEEK_SET), "index file lseek"))
-        return 0;
-
-    if (!checked_write(indexFd, entry, INDEX_ENTRY_SIZE, "index file write"))
+    if (!checked_write(indexFd, entry, INDEX_ENTRY_SIZE, INDEX_OFFSET(block_id), "index file write"))
         return 0;
 
     return 1;
@@ -741,10 +740,7 @@ static int writeToCurrentBlock(void *data, uint32_t len)
     if (!len)
         return 1;
 
-    if (!check_errors(lseek(dataFd, DATA_OFFSET(current_block_id) + current_block_offset, SEEK_SET), "data file lseek"))
-        return 0;
-
-    if (!checked_write(dataFd, data, len, "data file write"))
+    if (!checked_write(dataFd, data, len, DATA_OFFSET(current_block_id) + current_block_offset, "data file write"))
         return 0;
 
     current_block_offset += len;
@@ -768,10 +764,7 @@ static int zeroTrailingData()
     zeros = alloca(len);
     memset(zeros, 0, len);
 
-    if (!check_errors(lseek(dataFd, DATA_OFFSET(current_block_id) + current_block_offset, SEEK_SET), "data file lseek"))
-        return 0;
-
-    if (!checked_write(dataFd, zeros, len, "data file zeroing"))
+    if (!checked_write(dataFd, zeros, len, DATA_OFFSET(current_block_id) + current_block_offset, "data file zeroing"))
         return 0;
 
     return 1;
@@ -786,10 +779,7 @@ static int validateHeader()
     uint32_t stored_blocksize;
 
     /* validate header */
-    if (!check_errors(lseek(dataFd, 0, SEEK_SET), "data lseek"))
-        return 0;
-
-    if (!checked_read(dataFd, file_header, FILE_HEADER_SIZE, "data file header read"))
+    if (!checked_read(dataFd, file_header, FILE_HEADER_SIZE, 0, "data file header read"))
         return 0;
 
     stored_numblocks = get_uint32(file_header);
@@ -816,16 +806,13 @@ static int recoverFromDisk()
     if (!validateHeader())
         return 0;
 
-    if (!check_errors(lseek(indexFd, 0, SEEK_SET), "index lseek"))
-        return 0;
-
     for (block_id = 0; block_id < archive_file_num_blocks; block_id += INDEX_BATCH) {
         unsigned i;
         unsigned len = min(INDEX_BATCH, archive_file_num_blocks - block_id);
         uint32_t sequence;
         uint16_t offset;
 
-        if (!checked_read(indexFd, entry, INDEX_ENTRY_SIZE * len, "index read"))
+        if (!checked_read(indexFd, entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(block_id), "index read"))
             return 0;
 
         for (i = 0; i < len; ++i) {
@@ -861,10 +848,7 @@ static int recoverFromDisk()
             break;
         }
 
-        if (!check_errors(lseek(dataFd, DATA_OFFSET(selected_block_id) + selected_block_offset, SEEK_SET), "data lseek"))
-            return 0;
-
-        if (!checked_read(dataFd, header, MESSAGE_HEADER_SIZE, "data read"))
+        if (!checked_read(dataFd, header, MESSAGE_HEADER_SIZE, DATA_OFFSET(selected_block_id) + selected_block_offset, "data read"))
             return 0;
 
         len = get_uint32(header);
@@ -874,12 +858,12 @@ static int recoverFromDisk()
             break; /* hit zeroed data */
         }
 
-        if (len + selected_block_offset + 8 >= BLOCK_SIZE) {
+        if (selected_block_offset + 8 + len >= BLOCK_SIZE) {
             DEBUG("found a message that crossed a block boundary at block %u offset %u length %u", selected_block_id, selected_block_offset, len);
             break; /* message extends beyond this block */
         }
 
-        if (!checked_read(dataFd, block, len, "data read"))
+        if (!checked_read(dataFd, block, len, DATA_OFFSET(selected_block_id) + selected_block_offset + 8, "data read"))
             return 0;
 
         datacrc = crc32(0L, block, len);
@@ -979,24 +963,18 @@ static int openFiles() {
 
         /* rewrite datafile header */
 
-        if (!check_errors(lseek(dataFd, 0, SEEK_SET), "data file lseek"))
-            goto error;
-
         set_uint32(file_header, archive_file_num_blocks);
         set_uint32(file_header+4, BLOCK_SIZE);
 
-        if (!checked_write(dataFd, file_header, FILE_HEADER_SIZE, "data file header write"))
+        if (!checked_write(dataFd, file_header, FILE_HEADER_SIZE, 0, "data file header write"))
             goto error;
 
         /* clear index */
 
-        if (!check_errors(lseek(indexFd, 0, SEEK_SET), "index file lseek"))
-            goto error;
-
         memset(index_entry, 0, sizeof(index_entry));
         for (i = 0; i < archive_file_num_blocks; i += INDEX_BATCH) {
             unsigned len = min(INDEX_BATCH, archive_file_num_blocks - i);
-            if (!checked_write(indexFd, index_entry, INDEX_ENTRY_SIZE * len, "index file write"))
+            if (!checked_write(indexFd, index_entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(i), "index file write"))
                 goto error;
         }
 
