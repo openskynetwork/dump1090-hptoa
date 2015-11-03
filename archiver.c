@@ -451,7 +451,7 @@ static int flushInmemEntry(archive_inmem *inmem)
     /* allocate space for our output message, build the header */
     message = alloca(11 + compressedlen);
     set_uint24(message, inmem->addr);
-    millis = (uint64_t)(inmem->last_message_time.tv_sec * 1000000ULL + inmem->last_message_time.tv_nsec / 1000ULL);
+    millis = (uint64_t)(inmem->last_message_time.tv_sec * 1000ULL + inmem->last_message_time.tv_nsec / 1000000ULL);
     set_uint64(message+3, millis);
 
     /* compress the circular buffer */
