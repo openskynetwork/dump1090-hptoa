@@ -360,6 +360,7 @@ static void shrinkInmem(int purge)
         *p = oldest->hashNext;
 
         /* free it */
+        free(oldest->data);
         free(oldest);
         --inmemSize;
     }
