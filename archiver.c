@@ -805,7 +805,6 @@ static int validateHeader()
 static int recoverFromDisk()
 {
     uint8_t entry[INDEX_ENTRY_SIZE * 1000];
-    uint8_t header[MESSAGE_HEADER_SIZE];
     unsigned block_id;
 
     unsigned highest_sequence = 0;
@@ -853,6 +852,7 @@ static int recoverFromDisk()
         uint32_t headercrc;
         uint32_t datacrc;
         uint8_t block[BLOCK_SIZE];
+        uint8_t header[MESSAGE_HEADER_SIZE];
 
         if (selected_block_offset + 8 > BLOCK_SIZE) {
             DEBUG("not enough remaining space for another message at block %u offset %u length %u", selected_block_id, selected_block_offset, len);
