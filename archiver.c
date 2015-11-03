@@ -629,15 +629,17 @@ static int writeArchiveData(uint8_t *data, unsigned len, int partial)
      * want to write an index entry with offset 0 and zero the block,
      * because the next entry will start at 0)
      */
-    if (!writeToCurrentBlock(data, len))
-        return 0;
 
     if (partial) {
         /* we started a new block, but we don't know if it has message boundaries yet */
+        if (!writeToCurrentBlock(data, len))
+            return 0;
         index_write_pending = 1;
     } else {
         /* we started a new block, and we know where the first message boundary is */
-        if (!writeCurrentIndexEntry(current_block_offset))
+        if (!writeCurrentIndexEntry(current_block_offset + len))
+            return 0;
+        if (!writeToCurrentBlock(data, len))
             return 0;
         if (!zeroTrailingData())
             return 0;
