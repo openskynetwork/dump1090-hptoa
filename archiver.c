@@ -804,8 +804,8 @@ static int validateHeader()
 /* read the index and find where we should start appending from */
 static int recoverFromDisk()
 {
-    uint8_t entry[INDEX_ENTRY_SIZE];
-    uint8_t header[MESSAGE_HEADER_SIZE * 1000];
+    uint8_t entry[INDEX_ENTRY_SIZE * 1000];
+    uint8_t header[MESSAGE_HEADER_SIZE];
     unsigned block_id;
 
     unsigned highest_sequence = 0;
