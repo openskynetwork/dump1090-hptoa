@@ -224,6 +224,7 @@ typedef struct rtlsdr_dev rtlsdr_dev_t;
 #include "cpr.h"
 #include "icao_filter.h"
 #include "convert.h"
+#include "archiver.h"
 
 //======================== structure declarations =========================
 

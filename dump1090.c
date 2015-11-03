@@ -264,6 +264,8 @@ void modesInit(void) {
             exit(1);
         }
     }
+
+    archiverInit();
 }
 
 static void convert_samples(void *iq,
@@ -757,6 +759,7 @@ void backgroundTasks(void) {
 
     icaoFilterExpire();
     trackPeriodicUpdate();
+    archiverPeriodicWork();
 
     if (Modes.net) {
 	modesNetPeriodicWork();
@@ -1233,6 +1236,7 @@ int main(int argc, char **argv) {
         display_total_stats();
     }
 
+    archiverCleanup();
     cleanup_converter(Modes.converter_state);
     log_with_timestamp("Normal exit.");
 

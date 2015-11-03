@@ -440,12 +440,11 @@ static char *ais_charset = "@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_ !\"#$%&'()*+,-./01
 
 int decodeModesMessage(struct modesMessage *mm, unsigned char *msg)
 {
+    // Preserve the original uncorrected copy for later forwarding
+    memcpy(mm->verbatim, msg, MODES_LONG_MSG_BYTES);
+
     // Work on our local copy.
     memcpy(mm->msg, msg, MODES_LONG_MSG_BYTES);
-    if (Modes.net_verbatim) {
-        // Preserve the original uncorrected copy for later forwarding
-        memcpy(mm->verbatim, msg, MODES_LONG_MSG_BYTES);
-    }
     msg = mm->msg;
 
     // Get the message type ASAP as other operations depend on this
@@ -1231,6 +1230,9 @@ void useModesMessage(struct modesMessage *mm) {
     if (!Modes.interactive && !Modes.quiet && (!Modes.show_only || mm->addr == Modes.show_only)) {
         displayModesMessage(mm);
     }
+
+    // archive it.
+    archiverStoreMessage(mm);
 
     // Feed output clients.
     // If in --net-verbatim mode, do this for all messages.
