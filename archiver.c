@@ -895,7 +895,7 @@ static int openFiles() {
     if (!check_errors(fstat(dataFd, &st), "checking data file size"))
         goto error;
 
-    if (st.st_size != expected_data_size) {
+    if (st.st_size != (off_t)expected_data_size) {
         fprintf(stderr, "archiver: adjusting data file size from %u to %u\n", (unsigned)st.st_size, (unsigned)expected_data_size);
 
         /* adjust size */
@@ -913,7 +913,7 @@ static int openFiles() {
     if (!check_errors(fstat(indexFd, &st), "checking index file size"))
         goto error;
 
-    if (st.st_size != expected_index_size) {
+    if (st.st_size != (off_t)expected_index_size) {
         fprintf(stderr, "archiver: adjusting index file size from %u to %u\n", (unsigned)st.st_size, (unsigned)expected_index_size);
 
         /* adjust size */
