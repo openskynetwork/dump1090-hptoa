@@ -133,11 +133,18 @@ void archiverInit(void) {
 
 void archiverCleanup(void) {
     /* flush data, close down */
+    if (dataFd < 0)
+        return;
+
     shrinkInmem(1);
+    writeCurrentIndexFilter();
     closeFiles();
 }
 
 void archiverPeriodicWork(void) {
+    if (dataFd < 0)
+        return;
+
     /* look for old entries, flush them */
     shrinkInmem(0);
 }
