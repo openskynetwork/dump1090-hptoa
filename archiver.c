@@ -227,13 +227,10 @@ void archiverStoreMessage(struct modesMessage *message)
     inmem->next_recent_message = (inmem->next_recent_message + 1) % MAX_RECENT_MESSAGES;
 }
 
-/* Jenkins one-at-a-time hash, unrolled for 3 bytes */
-static uint32_t archiveHashFunction(uint32_t a, uint32_t initial)
+/* Jenkins one-at-a-time hash, unrolled for 3 bytes, used for hashing ICAO addresses */
+static uint32_t archiveHashFunction(uint32_t a)
 {
-    uint32_t hash = initial;
-
-    hash += hash << 10;
-    hash ^= hash >> 6;
+    uint32_t hash = 0;
 
     hash += a & 0xff;
     hash += hash << 10;
@@ -254,16 +251,49 @@ static uint32_t archiveHashFunction(uint32_t a, uint32_t initial)
     return hash;
 }
 
-/* 32 bit Bloom filter (m=32, n=4, optimal k=5.5) */
+/* Jenkins one-at-a-time hash, unrolled for 4 bytes, used in the bloom filter below */
+static uint32_t bloomHash(uint32_t a)
+{
+    uint32_t hash = 0;
+
+    hash += a & 0xff;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+
+    hash += (a >> 8) & 0xff;
+    hash += (hash << 10);
+    hash ^= (hash >> 6);
+
+    hash += (a >> 16) & 0xff;
+    hash += (hash << 10);
+    hash ^= (hash >> 6);
+
+    hash += (a >> 24) & 0xff;
+    hash += (hash << 10);
+    hash ^= (hash >> 6);
+
+    hash += (hash << 3);
+    hash ^= (hash >> 11);
+    hash += (hash << 15);
+
+    return hash;
+}
+
+/* 32 bit Bloom filter (m=32, k=5) */
 static uint32_t archiveBloomFilter(uint32_t a)
 {
+    uint32_t h1 = bloomHash(a);
+    uint32_t h2 = bloomHash(h1);
+    uint32_t h3 = bloomHash(h2);
+    uint32_t h4 = bloomHash(h3);
+    uint32_t h5 = bloomHash(h4);
+
     return
-        (1 << (archiveHashFunction(a, 0) & 31)) |
-        (1 << (archiveHashFunction(a, 1) & 31)) |
-        (1 << (archiveHashFunction(a, 2) & 31)) |
-        (1 << (archiveHashFunction(a, 3) & 31)) |
-        (1 << (archiveHashFunction(a, 4) & 31)) |
-        (1 << (archiveHashFunction(a, 5) & 31));
+        (1 << (h1 & 31)) |
+        (1 << (h2 & 31)) |
+        (1 << (h3 & 31)) |
+        (1 << (h4 & 31)) |
+        (1 << (h5 & 31));
 }
 
 #define INMEM_MAX_AGE 300
@@ -279,7 +309,7 @@ static archive_inmem *getInmemState(struct modesMessage *message)
     archive_inmem *inmem;
 
     /* hashtable lookup */
-    h = archiveHashFunction(message->addr, 0) % INMEM_HASHTABLE_SIZE;
+    h = archiveHashFunction(message->addr) % INMEM_HASHTABLE_SIZE;
     for (inmem = inmem_hashtable[h]; inmem && inmem->addr != message->addr; inmem = inmem->hashNext)
         ;
 
@@ -368,7 +398,7 @@ static void shrinkInmem(int purge)
         oldest->lruNext->lruPrev = oldest->lruPrev;
 
         /* remove from hashtable */
-        for (p = &inmem_hashtable[archiveHashFunction(oldest->addr, 0) % INMEM_HASHTABLE_SIZE]; *p && *p != oldest; p = &(*p)->hashNext)
+        for (p = &inmem_hashtable[archiveHashFunction(oldest->addr) % INMEM_HASHTABLE_SIZE]; *p && *p != oldest; p = &(*p)->hashNext)
             ;
         assert (*p == oldest);
         *p = oldest->hashNext;
@@ -578,12 +608,14 @@ static int writeArchiveMessage(uint8_t *data, unsigned len, uint24_t addr)
 {
     uint8_t header[MESSAGE_HEADER_SIZE];
     uint32_t datacrc;
+    uint32_t bloom;
 
     datacrc = crc32(0L, data, len);
-    DEBUG("writing %u bytes of archive message with crc %08x and address %06x", len, datacrc, addr);
+    bloom = archiveBloomFilter(addr);
+    DEBUG("writing %u bytes of archive message with crc %08x address %06x bloom %08x", len, datacrc, addr, bloom);
 
     /* update the block filter, this will get flushed to disk when we finish the current block */
-    current_block_filter |= archiveBloomFilter(addr);
+    current_block_filter |= bloom;
 
     set_uint32(header, len);
     set_uint32(header+4, datacrc);
@@ -823,7 +855,7 @@ static int zeroTrailingData()
 }
 
 #define INDEX_BATCH 1000
-#define DISK_VERSION 0x00010002
+#define DISK_VERSION 0x00010003
 
 static int validateHeader()
 {
