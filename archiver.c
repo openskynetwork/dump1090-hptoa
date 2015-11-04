@@ -606,7 +606,8 @@ static int writeArchiveData(uint8_t *data, unsigned len, int partial)
 
     if (index_write_pending) {
         /* need to write an index entry, and this block has no message boundaries */
-        writeCurrentIndexEntry(0xFFFF);
+        if (!writeCurrentIndexEntry(0xFFFF))
+            return 0;
         index_write_pending = 0;
     }
 
@@ -616,7 +617,8 @@ static int writeArchiveData(uint8_t *data, unsigned len, int partial)
     while (len >= BLOCK_SIZE) {
         if (!writeCurrentIndexEntry(0xFFFF))
             return 0;
-        writeToCurrentBlock(data, BLOCK_SIZE);
+        if (!writeToCurrentBlock(data, BLOCK_SIZE))
+            return 0;
 
         len -= BLOCK_SIZE;
         data += BLOCK_SIZE;
