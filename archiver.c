@@ -76,12 +76,13 @@ static int circularMessageLengthFromByte(uint8_t b);
 static archive_inmem *getInmemState(struct modesMessage *message);
 static int flushInmemEntry(archive_inmem *inmem);
 
-static int writeArchiveMessage(uint8_t *data, unsigned len);
+static int writeArchiveMessage(uint8_t *data, unsigned len, uint24_t addr);
 static int writeArchiveData(uint8_t *data, unsigned len, int partial);
 static int writeToCurrentBlock(void *data, uint32_t len);
 static int zeroTrailingData();
 static void nextBlock();
 static int writeCurrentIndexEntry(uint32_t first_message_offset);
+static int writeCurrentIndexBitmap();
 
 static int writeLock();
 static int writeUnlock();
@@ -490,7 +491,7 @@ static int flushInmemEntry(archive_inmem *inmem)
     deflateEnd(&deflater);
 
     /* done, write it all */
-    return writeArchiveMessage(message, compressedlen);
+    return writeArchiveMessage(message, compressedlen, inmem->addr);
 }
 
 /*
@@ -500,6 +501,7 @@ static int flushInmemEntry(archive_inmem *inmem)
  * The data file has a header followed by a circularly-written sequence of messages.
  * The header is:
  *
+ *   32 bits   version    a version identifier
  *   32 bits   numblocks  the total number of blocks in the archive file
  *   32 bits   blocksize  the block size of the archive file in bytes (currently, must be 4096)
  *
@@ -523,6 +525,9 @@ static int flushInmemEntry(archive_inmem *inmem)
  *
  *   32 bits  sequence     an increasing sequence number indicating the order in which blocks were last
  *                         written
+ *   32 bits  bitmap       a fuzzy index of the ICAO addresses contained in this block;
+ *                         bit N is set if there is a message for (hash(ICAO)%32) that starts
+ *                         in this block.
  *   16 bits  offset       first_header the offset within the block of the start of the first message in the block;
  *                         if no message starts in this block, contains FFFF.
  *
@@ -542,25 +547,29 @@ static int flushInmemEntry(archive_inmem *inmem)
 #define BLOCK_SIZE 4096
 #define FILE_HEADER_SIZE 12
 #define MESSAGE_HEADER_SIZE 8
-#define INDEX_ENTRY_SIZE 6
+#define INDEX_ENTRY_SIZE 10
 
 static uint32_t archive_file_num_blocks = 50000; /* about 200M */
 
 static uint32_t current_block_id;
 static uint32_t current_block_offset;
 static uint32_t current_block_sequence;
+static uint32_t current_block_bitmap;
 
 /* Write an application message to the archive file;
  * this adds the CRC/length header and maintains the indexes etc.
  * returns 1 if all is OK
  */
-static int writeArchiveMessage(uint8_t *data, unsigned len)
+static int writeArchiveMessage(uint8_t *data, unsigned len, uint24_t addr)
 {
     uint8_t header[MESSAGE_HEADER_SIZE];
     uint32_t datacrc;
 
     datacrc = crc32(0L, data, len);
-    DEBUG("writing %u bytes of archive message with crc %08x", len, datacrc);
+    DEBUG("writing %u bytes of archive message with crc %08x and address %06x", len, datacrc, addr);
+
+    /* update the block bitmap, this will get flushed to disk when we finish the current block */
+    current_block_bitmap |= 1 << (archiveHashFunction(addr) % 32);
 
     set_uint32(header, len);
     set_uint32(header+4, datacrc);
@@ -603,6 +612,10 @@ static int writeArchiveData(uint8_t *data, unsigned len, int partial)
     }
 
     /* filled the current block */
+
+    if (!writeCurrentIndexBitmap())
+        return 0;
+    current_block_bitmap = 0;
 
     if (index_write_pending) {
         /* need to write an index entry, and this block has no message boundaries */
@@ -722,11 +735,31 @@ static int writeCurrentIndexEntry(uint32_t first_message_offset)
     assert (first_message_offset < BLOCK_SIZE || first_message_offset == 0xFFFF);
 
     set_uint32(entry, current_block_sequence);
-    set_uint16(entry+4, (uint16_t)first_message_offset);
+    /* Initially, set the bitmap to all-ones. When we are done with the block, we write the final value.
+     * If we get interrupted, it doesn't matter, because an all-ones bitmap matches everything so there
+     * will just be some extra false positives for anything reading the index but no false negatives.
+     */
+    set_uint32(entry+4, 0xFFFFFFFF);
+    set_uint16(entry+8, (uint16_t)first_message_offset);
 
     DEBUG("writing index entry for block %u sequence %u offset %u", current_block_id, current_block_sequence, first_message_offset);
 
-    if (!checked_write(dataFd, entry, INDEX_ENTRY_SIZE, INDEX_OFFSET(current_block_id), "index file write"))
+    if (!checked_write(dataFd, entry, INDEX_ENTRY_SIZE, INDEX_OFFSET(current_block_id), "index entry write"))
+        return 0;
+
+    return 1;
+}
+
+/* write the bitmap field for the current block's index entry */
+static int writeCurrentIndexBitmap()
+{
+    uint8_t buf[4];
+
+    set_uint32(buf, current_block_bitmap);
+
+    DEBUG("writing bitmap %08X for block %u", current_block_bitmap, current_block_id);
+
+    if (!checked_write(dataFd, buf, 4, INDEX_OFFSET(current_block_id) + 4, "index bitmap write"))
         return 0;
 
     return 1;
@@ -776,7 +809,7 @@ static int zeroTrailingData()
 }
 
 #define INDEX_BATCH 1000
-#define DISK_VERSION 0x00010000
+#define DISK_VERSION 0x00010001
 
 static int validateHeader()
 {
@@ -807,9 +840,10 @@ static int recoverFromDisk()
     uint8_t entry[INDEX_ENTRY_SIZE * INDEX_BATCH];
     unsigned block_id;
 
-    unsigned highest_sequence = 0;
-    unsigned selected_block_id = 0;
-    unsigned selected_block_offset = 0;
+    uint32_t highest_sequence = 0;
+    uint32_t selected_block_id = 0;
+    uint16_t selected_block_offset = 0;
+    uint32_t selected_block_bitmap = 0;
 
     if (!validateHeader())
         return 0;
@@ -818,6 +852,7 @@ static int recoverFromDisk()
         unsigned i;
         unsigned len = min(INDEX_BATCH, archive_file_num_blocks - block_id);
         uint32_t sequence;
+        uint32_t bitmap;
         uint16_t offset;
 
         if (!checked_read(dataFd, entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(block_id), "index read"))
@@ -825,12 +860,14 @@ static int recoverFromDisk()
 
         for (i = 0; i < len; ++i) {
             sequence = get_uint32(INDEX_ENTRY_SIZE * i + entry);
-            offset = get_uint16(INDEX_ENTRY_SIZE * i + entry + 4);
+            bitmap = get_uint32(INDEX_ENTRY_SIZE * i + entry + 4);
+            offset = get_uint16(INDEX_ENTRY_SIZE * i + entry + 8);
 
             if (sequence > highest_sequence && offset != 0xFFFF) {
                 highest_sequence = sequence;
                 selected_block_id = block_id + i;
                 selected_block_offset = offset;
+                selected_block_bitmap = bitmap;
             }
         }
     }
@@ -891,6 +928,7 @@ static int recoverFromDisk()
     current_block_id = selected_block_id;
     current_block_offset = selected_block_offset;
     current_block_sequence = highest_sequence;
+    current_block_bitmap = selected_block_bitmap;
     return 1;
 }
 
