@@ -38,7 +38,7 @@ typedef struct archive_inmem_s {
     uint24_t addr;                       // address of aircraft
     struct timespec last_message_time;   // when we last heard from it
 
-#define INMEM_BUFFER_SIZE 131072
+#define INMEM_BUFFER_SIZE 65536
     uint8_t *data;                       // uncompressed message data, circular buffer
     uint8_t *start;                      // first used byte
     uint8_t *end;                        // next free byte
