@@ -82,7 +82,7 @@ static int writeToCurrentBlock(void *data, uint32_t len);
 static int zeroTrailingData();
 static void nextBlock();
 static int writeCurrentIndexEntry(uint32_t first_message_offset);
-static int writeCurrentIndexBitmap();
+static int writeCurrentIndexFilter();
 
 static int writeLock();
 static int writeUnlock();
@@ -228,9 +228,12 @@ void archiverStoreMessage(struct modesMessage *message)
 }
 
 /* Jenkins one-at-a-time hash, unrolled for 3 bytes */
-static uint32_t archiveHashFunction(uint32_t a)
+static uint32_t archiveHashFunction(uint32_t a, uint32_t initial)
 {
-    uint32_t hash = 0;
+    uint32_t hash = initial;
+
+    hash += hash << 10;
+    hash ^= hash >> 6;
 
     hash += a & 0xff;
     hash += hash << 10;
@@ -251,6 +254,18 @@ static uint32_t archiveHashFunction(uint32_t a)
     return hash;
 }
 
+/* 32 bit Bloom filter (m=32, n=4, optimal k=5.5) */
+static uint32_t archiveBloomFilter(uint32_t a)
+{
+    return
+        (1 << (archiveHashFunction(a, 0) & 31)) |
+        (1 << (archiveHashFunction(a, 1) & 31)) |
+        (1 << (archiveHashFunction(a, 2) & 31)) |
+        (1 << (archiveHashFunction(a, 3) & 31)) |
+        (1 << (archiveHashFunction(a, 4) & 31)) |
+        (1 << (archiveHashFunction(a, 5) & 31));
+}
+
 #define INMEM_MAX_AGE 300
 #define INMEM_SOFT_MAX 300
 #define INMEM_HARD_MAX 400
@@ -264,7 +279,7 @@ static archive_inmem *getInmemState(struct modesMessage *message)
     archive_inmem *inmem;
 
     /* hashtable lookup */
-    h = archiveHashFunction(message->addr) % INMEM_HASHTABLE_SIZE;
+    h = archiveHashFunction(message->addr, 0) % INMEM_HASHTABLE_SIZE;
     for (inmem = inmem_hashtable[h]; inmem && inmem->addr != message->addr; inmem = inmem->hashNext)
         ;
 
@@ -353,7 +368,7 @@ static void shrinkInmem(int purge)
         oldest->lruNext->lruPrev = oldest->lruPrev;
 
         /* remove from hashtable */
-        for (p = &inmem_hashtable[archiveHashFunction(oldest->addr) % INMEM_HASHTABLE_SIZE]; *p && *p != oldest; p = &(*p)->hashNext)
+        for (p = &inmem_hashtable[archiveHashFunction(oldest->addr, 0) % INMEM_HASHTABLE_SIZE]; *p && *p != oldest; p = &(*p)->hashNext)
             ;
         assert (*p == oldest);
         *p = oldest->hashNext;
@@ -525,9 +540,8 @@ static int flushInmemEntry(archive_inmem *inmem)
  *
  *   32 bits  sequence     an increasing sequence number indicating the order in which blocks were last
  *                         written
- *   32 bits  bitmap       a fuzzy index of the ICAO addresses contained in this block;
- *                         bit N is set if there is a message for (hash(ICAO)%32) that starts
- *                         in this block.
+ *   32 bits  filter       a 32-bit Bloom filter indicating the set of ICAO addresses for messages that
+ *                         start in this block.
  *   16 bits  offset       first_header the offset within the block of the start of the first message in the block;
  *                         if no message starts in this block, contains FFFF.
  *
@@ -544,17 +558,17 @@ static int flushInmemEntry(archive_inmem *inmem)
  * See recoverFromDisk() for an example implementation of finding the end of the sequence.
  */
 
-#define BLOCK_SIZE 4096
+#define BLOCK_SIZE 16384
 #define FILE_HEADER_SIZE 12
 #define MESSAGE_HEADER_SIZE 8
 #define INDEX_ENTRY_SIZE 10
 
-static uint32_t archive_file_num_blocks = 50000; /* about 200M */
+static uint32_t archive_file_num_blocks = 12500; /* about 200M */
 
 static uint32_t current_block_id;
 static uint32_t current_block_offset;
 static uint32_t current_block_sequence;
-static uint32_t current_block_bitmap;
+static uint32_t current_block_filter;
 
 /* Write an application message to the archive file;
  * this adds the CRC/length header and maintains the indexes etc.
@@ -568,8 +582,8 @@ static int writeArchiveMessage(uint8_t *data, unsigned len, uint24_t addr)
     datacrc = crc32(0L, data, len);
     DEBUG("writing %u bytes of archive message with crc %08x and address %06x", len, datacrc, addr);
 
-    /* update the block bitmap, this will get flushed to disk when we finish the current block */
-    current_block_bitmap |= 1 << (archiveHashFunction(addr) % 32);
+    /* update the block filter, this will get flushed to disk when we finish the current block */
+    current_block_filter |= archiveBloomFilter(addr);
 
     set_uint32(header, len);
     set_uint32(header+4, datacrc);
@@ -613,9 +627,9 @@ static int writeArchiveData(uint8_t *data, unsigned len, int partial)
 
     /* filled the current block */
 
-    if (!writeCurrentIndexBitmap())
+    if (!writeCurrentIndexFilter())
         return 0;
-    current_block_bitmap = 0;
+    current_block_filter = 0;
 
     if (index_write_pending) {
         /* need to write an index entry, and this block has no message boundaries */
@@ -735,8 +749,8 @@ static int writeCurrentIndexEntry(uint32_t first_message_offset)
     assert (first_message_offset < BLOCK_SIZE || first_message_offset == 0xFFFF);
 
     set_uint32(entry, current_block_sequence);
-    /* Initially, set the bitmap to all-ones. When we are done with the block, we write the final value.
-     * If we get interrupted, it doesn't matter, because an all-ones bitmap matches everything so there
+    /* Initially, set the filter to all-ones. When we are done with the block, we write the final value.
+     * If we get interrupted, it doesn't matter, because an all-ones filter matches everything so there
      * will just be some extra false positives for anything reading the index but no false negatives.
      */
     set_uint32(entry+4, 0xFFFFFFFF);
@@ -750,16 +764,16 @@ static int writeCurrentIndexEntry(uint32_t first_message_offset)
     return 1;
 }
 
-/* write the bitmap field for the current block's index entry */
-static int writeCurrentIndexBitmap()
+/* write the filter for the current block's index entry */
+static int writeCurrentIndexFilter()
 {
     uint8_t buf[4];
 
-    set_uint32(buf, current_block_bitmap);
+    set_uint32(buf, current_block_filter);
 
-    DEBUG("writing bitmap %08X for block %u", current_block_bitmap, current_block_id);
+    DEBUG("writing filter %08X for block %u", current_block_filter, current_block_id);
 
-    if (!checked_write(dataFd, buf, 4, INDEX_OFFSET(current_block_id) + 4, "index bitmap write"))
+    if (!checked_write(dataFd, buf, 4, INDEX_OFFSET(current_block_id) + 4, "index filter write"))
         return 0;
 
     return 1;
@@ -809,7 +823,7 @@ static int zeroTrailingData()
 }
 
 #define INDEX_BATCH 1000
-#define DISK_VERSION 0x00010001
+#define DISK_VERSION 0x00010002
 
 static int validateHeader()
 {
@@ -843,7 +857,7 @@ static int recoverFromDisk()
     uint32_t highest_sequence = 0;
     uint32_t selected_block_id = 0;
     uint16_t selected_block_offset = 0;
-    uint32_t selected_block_bitmap = 0;
+    uint32_t selected_block_filter = 0;
 
     if (!validateHeader())
         return 0;
@@ -852,7 +866,7 @@ static int recoverFromDisk()
         unsigned i;
         unsigned len = min(INDEX_BATCH, archive_file_num_blocks - block_id);
         uint32_t sequence;
-        uint32_t bitmap;
+        uint32_t filter;
         uint16_t offset;
 
         if (!checked_read(dataFd, entry, INDEX_ENTRY_SIZE * len, INDEX_OFFSET(block_id), "index read"))
@@ -860,14 +874,14 @@ static int recoverFromDisk()
 
         for (i = 0; i < len; ++i) {
             sequence = get_uint32(INDEX_ENTRY_SIZE * i + entry);
-            bitmap = get_uint32(INDEX_ENTRY_SIZE * i + entry + 4);
+            filter = get_uint32(INDEX_ENTRY_SIZE * i + entry + 4);
             offset = get_uint16(INDEX_ENTRY_SIZE * i + entry + 8);
 
             if (sequence > highest_sequence && offset != 0xFFFF) {
                 highest_sequence = sequence;
                 selected_block_id = block_id + i;
                 selected_block_offset = offset;
-                selected_block_bitmap = bitmap;
+                selected_block_filter = filter;
             }
         }
     }
@@ -928,7 +942,7 @@ static int recoverFromDisk()
     current_block_id = selected_block_id;
     current_block_offset = selected_block_offset;
     current_block_sequence = highest_sequence;
-    current_block_bitmap = selected_block_bitmap;
+    current_block_filter = selected_block_filter;
     return 1;
 }
 
