@@ -52,6 +52,7 @@
 #include <rtl-sdr.h>
 
 #include <stdarg.h>
+#include <termios.h>
 
 static int verbose_device_search(char *s);
 
@@ -758,10 +759,7 @@ void backgroundTasks(void) {
     icaoFilterExpire();
     trackPeriodicUpdate();
 
-    if (Modes.net) {
-	modesNetPeriodicWork();
-    }    
-
+    modesNetPeriodicWork();
 
     // Refresh screen when in interactive mode
     if (Modes.interactive) {
@@ -902,11 +900,79 @@ int verbose_device_search(char *s)
 	fprintf(stderr, "No matching devices found.\n");
 	return -1;
 }
+
+static void setBeastOption(int fd, char what)
+{
+    char optionsmsg[3] = { 0x1a, '1', what };
+    if (write(fd, optionsmsg, 3) < 3) {
+        fprintf(stderr, "failed to write to Beast: %s", strerror(errno));
+        exit(1);
+    }
+}
+
+static int initBeastSerial()
+{
+    int fd;
+    struct termios tios;
+
+    fd = open(Modes.beast_serial, O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr, "Failed to open Beast serial device %s: %s\n",
+                Modes.beast_serial, strerror(errno));
+        exit(1);
+    }
+
+    if (tcgetattr(fd, &tios) < 0) {
+        fprintf(stderr, "tcgetattr(%s): %s\n",
+                Modes.beast_serial, strerror(errno));
+        exit(1);
+    }
+
+    tios.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON | IXOFF);
+    tios.c_oflag &= ~(OPOST | ONLCR | ONOCR | ONLRET | OFILL);
+    tios.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CLOCAL);
+    tios.c_cflag |= CS8 | CRTSCTS;
+    tios.c_lflag &= ~(ECHO | ICANON | ISIG | IEXTEN);
+    tios.c_cc[VMIN] = 11;
+    tios.c_cc[VTIME] = 0;
+
+    if (cfsetispeed(&tios, B3000000) < 0) {
+        fprintf(stderr, "cfsetispeed(%s, 3000000): %s\n",
+                Modes.beast_serial, strerror(errno));
+        exit(1);
+    }
+
+    if (cfsetospeed(&tios, B3000000) < 0) {
+        fprintf(stderr, "cfsetospeed(%s, 3000000): %s\n",
+                Modes.beast_serial, strerror(errno));
+        exit(1);
+    }
+
+    if (tcsetattr(fd, TCSANOW, &tios) < 0) {
+        fprintf(stderr, "tcsetattr(%s): %s\n",
+                Modes.beast_serial, strerror(errno));
+        exit(1);
+    }
+
+    /* set options */
+    setBeastOption(fd, 'C'); /* use binary format */
+    setBeastOption(fd, 'd'); /* no DF11/17-only filter, deliver all messages */
+    setBeastOption(fd, 'E'); /* enable mlat timestamps */
+    setBeastOption(fd, 'f'); /* enable CRC checks */
+    setBeastOption(fd, 'g'); /* no DF0/4/5 filter, deliver all messages */
+    setBeastOption(fd, 'H'); /* RTS enabled */
+    setBeastOption(fd, Modes.nfix_crc ? 'i' : 'I'); /* FEC enabled/disabled */
+    setBeastOption(fd, Modes.mode_ac ? 'J' : 'j');  /* Mode A/C enabled/disabled */
+
+    return fd;
+}
+
 //
 //=========================================================================
 //
 int main(int argc, char **argv) {
     int j;
+    struct net_service *beastSerialService = NULL;
 
     // Set sane defaults
     modesInitConfig();
@@ -1074,6 +1140,8 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j], "--json-location-accuracy") && more) {
             Modes.json_location_accuracy = atoi(argv[++j]);
 #endif
+        } else if (!strcmp(argv[j], "--beast-serial") && more) {
+            Modes.beast_serial = strdup(argv[++j]);
         } else {
             fprintf(stderr,
                 "Unknown or not enough arguments for option '%s'.\n\n",
@@ -1102,14 +1170,15 @@ int main(int argc, char **argv) {
     // Initialization
     log_with_timestamp("%s %s starting up.", MODES_DUMP1090_VARIANT, MODES_DUMP1090_VERSION);
     modesInit();
+    modesInitNet();
 
     if (Modes.net_only) {
         fprintf(stderr,"Net-only mode, no RTL device or file open.\n");
-    } else if (Modes.filename == NULL) {
-        if (modesInitRTLSDR() < 0) {
-            exit(1);
-        }
-    } else {
+    } else if (Modes.beast_serial != NULL) {
+        int beastFd = initBeastSerial();
+        beastSerialService = makeBeastInputService();
+        createGenericClient(beastSerialService, beastFd);
+    } else if (Modes.filename != NULL) {
         if (Modes.filename[0] == '-' && Modes.filename[1] == '\0') {
             Modes.fd = STDIN_FILENO;
         } else if ((Modes.fd = open(Modes.filename,
@@ -1122,8 +1191,11 @@ int main(int argc, char **argv) {
             perror("Opening data file");
             exit(1);
         }
+    } else {
+        if (modesInitRTLSDR() < 0) {
+            exit(1);
+        }
     }
-    if (Modes.net) modesInitNet();
 
     // init stats:
     Modes.stats_current.start = Modes.stats_current.end =
@@ -1142,7 +1214,7 @@ int main(int argc, char **argv) {
 
     // If the user specifies --net-only, just run in order to serve network
     // clients without reading data from the RTL device
-    if (Modes.net_only) {
+    if (Modes.net_only || beastSerialService) {
         while (!Modes.exit) {
             struct timespec start_time;
 
@@ -1151,6 +1223,9 @@ int main(int argc, char **argv) {
             end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
 
             usleep(100000);
+
+            if (beastSerialService && beastSerialService->connections == 0)
+                break;
         }
     } else {
         // Create the thread that will read the data from the device.

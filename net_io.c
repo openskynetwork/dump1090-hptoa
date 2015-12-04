@@ -202,37 +202,37 @@ void modesInitNet(void) {
 
     // set up listeners
 
-    if (Modes.net_output_raw_port) {
+    if (Modes.net && Modes.net_output_raw_port) {
         s = serviceInit("Raw TCP output", &Modes.raw_out, send_raw_heartbeat, NULL, NULL);
         serviceListen(s, Modes.net_bind_address, Modes.net_output_raw_port);
     }
 
-    if (Modes.net_output_beast_port) {
+    if (Modes.net && Modes.net_output_beast_port) {
         s = serviceInit("Beast TCP output", &Modes.beast_out, send_beast_heartbeat, NULL, NULL);
         serviceListen(s, Modes.net_bind_address, Modes.net_output_beast_port);
     }
 
-    if (Modes.net_output_sbs_port) {
+    if (Modes.net && Modes.net_output_sbs_port) {
         s = serviceInit("Basestation TCP output", &Modes.sbs_out, send_sbs_heartbeat, NULL, NULL);
         serviceListen(s, Modes.net_bind_address, Modes.net_output_sbs_port);
     }
 
-    if (Modes.net_fatsv_port) {
+    if (Modes.net && Modes.net_fatsv_port) {
         s = makeFatsvOutputService();
         serviceListen(s, Modes.net_bind_address, Modes.net_fatsv_port);
     }
 
-    if (Modes.net_input_raw_port) {
+    if (Modes.net && Modes.net_input_raw_port) {
         s = serviceInit("Raw TCP input", NULL, NULL, "\n", decodeHexMessage);
         serviceListen(s, Modes.net_bind_address, Modes.net_input_raw_port);
     }
 
-    if (Modes.net_input_beast_port) {
+    if (Modes.net && Modes.net_input_beast_port) {
         s = makeBeastInputService();
         serviceListen(s, Modes.net_bind_address, Modes.net_input_beast_port);
     }
 
-    if (Modes.net_http_port) {
+    if (Modes.net && Modes.net_http_port) {
         s = serviceInit("HTTP server", NULL, NULL, "\r\n\r\n", handleHTTPRequest);
         serviceListen(s, Modes.net_bind_address, Modes.net_http_port);
     }

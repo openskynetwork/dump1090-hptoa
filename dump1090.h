@@ -264,6 +264,9 @@ struct {                             // Internal state
     iq_convert_fn  converter_function;
     struct converter_state *converter_state;
 
+    // Beast
+    char *         beast_serial;
+
     // RTLSDR
     char *        dev_name;
     int           gain;
