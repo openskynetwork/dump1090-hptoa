@@ -522,6 +522,7 @@ void readDataFromFile(void) {
 
     switch (Modes.file_format) {
     case INPUT_UC8:
+    case INPUT_SR16:
     case INPUT_SR16Q11:
         bytes_per_sample = 2;
         break;
@@ -603,6 +604,13 @@ void readDataFromFile(void) {
         out = outbuf->data + Modes.trailing_samples;
         in = (uint16_t*)readbuf;
         switch (Modes.file_format) {
+        case INPUT_SR16:
+            for (i = 0; i < slen; ++i) {
+                int16_t R = (int16_t)le16toh(*in++);
+                *out++ = (uint16_t) (abs(R) * 2);
+            }
+            break;
+
         case INPUT_SR16Q11:
             for (i = 0; i < slen; ++i) {
                 int16_t R = (int16_t)le16toh(*in++);
@@ -1026,10 +1034,12 @@ int main(int argc, char **argv) {
                 Modes.file_format = INPUT_SC16;
             } else if (!strcasecmp(argv[j], "sc16q11")) {
                 Modes.file_format = INPUT_SC16Q11;
+            } else if (!strcasecmp(argv[j], "sr16")) {
+                Modes.file_format = INPUT_SR16;
             } else if (!strcasecmp(argv[j], "sr16q11")) {
                 Modes.file_format = INPUT_SR16Q11;
             } else {
-                fprintf(stderr, "Input format '%s' not understood (supported values: UC8, SC16, SC16Q11, SR16Q11)\n",
+                fprintf(stderr, "Input format '%s' not understood (supported values: UC8, SC16, SC16Q11, SR16, SR16Q11)\n",
                         argv[j]);
                 exit(1);
             }
