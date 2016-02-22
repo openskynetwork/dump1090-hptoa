@@ -522,8 +522,9 @@ void readDataFromFile(void) {
 
     switch (Modes.file_format) {
     case INPUT_UC8:
+        bytes_per_sample = 2;
+        break;
     case INPUT_SR16:
-    case INPUT_SR16Q11:
         bytes_per_sample = 2;
         break;
     case INPUT_SC16:
@@ -603,19 +604,50 @@ void readDataFromFile(void) {
         // Convert the new data
         out = outbuf->data + Modes.trailing_samples;
         in = (uint16_t*)readbuf;
+
+#define HILBERT_SIZE 63
+        // Hilbert transform
+        // courtesy of gnuradio.filter.firdes.hilbert(63, windowtype=WIN_RECTANGULAR)
+        const float hilbert[HILBERT_SIZE] = {
+            -0.020952552556991577, 0.0, -0.022397557273507118, 0.0, -0.024056635797023773, 0.0, -0.02598116546869278, 0.0, -0.028240399435162544, 0.0, -0.030929960310459137, 0.0, -0.0341857448220253, 0.0, -0.03820759803056717, 0.0, -0.04330194741487503, 0.0, -0.04996378347277641, 0.0, -0.05904810503125191, 0.0, -0.07216990739107132, 0.0, -0.09278988093137741, 0.0, -0.1299058347940445, 0.0, -0.21650972962379456, 0.0, -0.6495291590690613, 0.0, 0.6495291590690613, 0.0, 0.21650972962379456, 0.0, 0.1299058347940445, 0.0, 0.09278988093137741, 0.0, 0.07216990739107132, 0.0, 0.05904810503125191, 0.0, 0.04996378347277641, 0.0, 0.04330194741487503, 0.0, 0.03820759803056717, 0.0, 0.0341857448220253, 0.0, 0.030929960310459137, 0.0, 0.028240399435162544, 0.0, 0.02598116546869278, 0.0, 0.024056635797023773, 0.0, 0.022397557273507118, 0.0, 0.020952552556991577
+        };
+
+#define QUEUESIZE (HILBERT_SIZE * 128)
+        static int16_t queue[QUEUESIZE];
+        static int queueidx = HILBERT_SIZE - 1;
+
         switch (Modes.file_format) {
         case INPUT_SR16:
             for (i = 0; i < slen; ++i) {
-                int16_t R = (int16_t)le16toh(*in++);
-                *out++ = (uint16_t) (abs(R) * 2);
-            }
-            break;
+                int j;
+                float I, Q;
 
-        case INPUT_SR16Q11:
-            for (i = 0; i < slen; ++i) {
-                int16_t R = (int16_t)le16toh(*in++);
-                *out++ = (uint16_t) (abs(R) * 32);
+                queue[queueidx] = (int16_t)le16toh(*in++);
+
+                // nb: this gets the signs of I/Q wrong sometimes,
+                // but it doesn't matter because we're just going
+                // to square them anyway
+
+                I = queue[queueidx - HILBERT_SIZE/2] * 0.5;
+
+                Q = 0;
+                for (j = 0; j < HILBERT_SIZE; j++) {
+                    Q += queue[queueidx - HILBERT_SIZE + j + 1] * hilbert[j];
+                }
+
+                ++queueidx;
+                if (queueidx >= QUEUESIZE) {
+                    memcpy(&queue[0], &queue[queueidx - HILBERT_SIZE], HILBERT_SIZE * sizeof(queue[0]));
+                    queueidx = HILBERT_SIZE;
+                }
+
+                float mag = sqrtf(I*I + Q*Q) * (65536.0 / 32768.0);
+                if (mag > 65535)
+                    mag = 65535;
+
+                *out++ = (uint16_t)mag;
             }
+
             break;
 
         case INPUT_UC8:
@@ -1036,10 +1068,8 @@ int main(int argc, char **argv) {
                 Modes.file_format = INPUT_SC16Q11;
             } else if (!strcasecmp(argv[j], "sr16")) {
                 Modes.file_format = INPUT_SR16;
-            } else if (!strcasecmp(argv[j], "sr16q11")) {
-                Modes.file_format = INPUT_SR16Q11;
             } else {
-                fprintf(stderr, "Input format '%s' not understood (supported values: UC8, SC16, SC16Q11, SR16, SR16Q11)\n",
+                fprintf(stderr, "Input format '%s' not understood (supported values: UC8, SC16, SC16Q11, SR16)\n",
                         argv[j]);
                 exit(1);
             }

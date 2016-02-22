@@ -251,7 +251,7 @@ struct mag_buf {
     uint32_t        dropped;         // Number of dropped samples preceding this buffer
 };
 
-typedef enum { INPUT_UC8=0, INPUT_SC16, INPUT_SC16Q11, INPUT_SR16, INPUT_SR16Q11 } input_format_t;
+typedef enum { INPUT_UC8=0, INPUT_SC16, INPUT_SC16Q11, INPUT_SR16 } input_format_t;
 
 // Program global state
 struct {                             // Internal state
