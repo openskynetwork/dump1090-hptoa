@@ -631,7 +631,7 @@ void readDataFromFile(void) {
                 I = queue[queueidx - HILBERT_SIZE/2] * 0.5;
 
                 Q = 0;
-                for (j = 0; j < HILBERT_SIZE; j++) {
+                for (j = 0; j < HILBERT_SIZE; j += 2) {
                     Q += queue[queueidx - HILBERT_SIZE + j + 1] * hilbert[j];
                 }
 
