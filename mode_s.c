@@ -1547,8 +1547,12 @@ void displayModesMessage(struct modesMessage *mm) {
     if (mm->timestampMsg) {
         if (mm->timestampMsg == MAGIC_MLAT_TIMESTAMP)
             printf("This is a synthetic MLAT message.\n");
-        else
-            printf("Time: %.2fus\n", mm->timestampMsg / 12.0);
+        else {
+            printf("Time: %.2f us\n", mm->timestampMsg / 12.0);
+            if (Modes.hp_timestamp) {
+                printf("HP-Time: %.4f ns\n", mm->hpTimestampMsg);
+            }
+        }
     }
 
     switch (mm->msgtype) {

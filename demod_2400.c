@@ -18,6 +18,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "dump1090.h"
+#include "hp-toa/HP-TOA.h"
 
 // 2.4MHz sampling rate version
 //
@@ -52,6 +53,17 @@ static inline int slice_phase4(uint16_t *m) {
     return m[0] + 5 * m[1] - 5 * m[2] - m[3];
 }
 
+static inline  __attribute__((always_inline)) unsigned getbit(unsigned char *data, unsigned bitnum)
+{
+     unsigned bi = bitnum - 1;
+     unsigned by = bi >> 3;
+     unsigned mask = 1 << (7 - (bi & 7));
+
+     return (data[by] & mask) != 0;
+}
+
+int total_IQ = 0;
+
 //
 // Given 'mlen' magnitude samples in 'm', sampled at 2.4MHz,
 // try to demodulate some Mode S messages.
@@ -72,6 +84,8 @@ void demodulate2400(struct mag_buf *mag)
     uint64_t sum_scaled_signal_power = 0;
 
     msg = msg1;
+
+    total_IQ = total_IQ + mlen;
 
     for (j = 0; j < mlen; j++) {
         uint16_t *preamble = &m[j];
@@ -343,6 +357,43 @@ void demodulate2400(struct mag_buf *mag)
                 Modes.stats_current.peak_signal_power = mm.signalLevel;
             if (mm.signalLevel > 0.50119)
                 Modes.stats_current.strong_signal_count++; // signal power above -3dBFS
+        }
+
+        // Run HP-ToA method for TOA nanosecond precision
+        if (Modes.hp_timestamp) {
+
+            // Get bits decoded
+            int bits[mm.msgbits];
+            for (int i = 0; i < mm.msgbits; i++)
+                bits[i] = getbit(mm.msg, i + 1);
+
+            // Prepare the IQ samples of the packet
+            unsigned int b_packet, e_packet;
+            int iq_front_margin = 14;
+            int iq_back_margin = 20;
+
+            b_packet = j * 2;
+            e_packet = (j + ((msglen+iq_back_margin) * 12 / 5)) * 2;
+
+
+            int packet_complex_len = iq_front_margin + ((e_packet - b_packet) / 2);
+            float complex packet_complex[packet_complex_len];
+
+            memset(&packet_complex,0,sizeof(float complex)*packet_complex_len);
+
+            int index=0;
+
+            for (unsigned int p = b_packet; p < e_packet; p = p + 2) {
+                index = iq_front_margin+((p-b_packet)/2);
+                packet_complex[index] = CMPLX( (float)((mag->iq_data[p] - 127.4) / 128.0),
+                                               (float)((mag->iq_data[p+1] - 127.4) / 128.0));
+            }
+
+            unsigned int start_packet = (total_IQ - mlen + j - Modes.trailing_samples);
+
+            double toa = get_hp_toa(packet_complex, packet_complex_len, iq_front_margin, start_packet, UPSAMPLING_FACTOR, bits, mm.msgbits);
+
+            mm.hpTimestampMsg = toa;
         }
 
         // Skip over the message:

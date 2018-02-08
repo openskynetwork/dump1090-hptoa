@@ -182,8 +182,14 @@ void modesInit(void) {
     }
 
     for (i = 0; i < MODES_MAG_BUFFERS; ++i) {
+
         if ( (Modes.mag_buffers[i].data = calloc(MODES_MAG_BUF_SAMPLES+Modes.trailing_samples, sizeof(uint16_t))) == NULL ) {
             fprintf(stderr, "Out of memory allocating magnitude buffer.\n");
+            exit(1);
+        }
+
+        if ( (Modes.mag_buffers[i].iq_data = calloc((MODES_MAG_BUF_SAMPLES+Modes.trailing_samples)*2, sizeof(u_char))) == NULL ) {
+            fprintf(stderr, "Out of memory allocating IQ buffer.\n");
             exit(1);
         }
 
@@ -467,13 +473,18 @@ void rtlsdrCallback(unsigned char *buf, uint32_t len, void *ctx) {
     // Copy trailing data from last block (or reset if not valid)
     if (outbuf->dropped == 0 && lastbuf->length >= Modes.trailing_samples) {
         memcpy(outbuf->data, lastbuf->data + lastbuf->length - Modes.trailing_samples, Modes.trailing_samples * sizeof(uint16_t));
+        memcpy(outbuf->iq_data, lastbuf->iq_data + lastbuf->length*2  - Modes.trailing_samples*2, Modes.trailing_samples * 2 * sizeof(unsigned char));
     } else {
         memset(outbuf->data, 0, Modes.trailing_samples * sizeof(uint16_t));
+        memset(outbuf->iq_data, 0, Modes.trailing_samples * 2 * sizeof(unsigned char));
     }
 
     // Convert the new data
     outbuf->length = slen;
     convert_samples(buf, &outbuf->data[Modes.trailing_samples], slen, &outbuf->total_power);
+
+    // Copy IQ data.
+    memcpy(&outbuf->iq_data[Modes.trailing_samples*2], buf, slen*2);
 
     // Push the new data to the demodulation thread
     pthread_mutex_lock(&Modes.data_mutex);
@@ -543,8 +554,10 @@ void readDataFromFile(void) {
         // Copy trailing data from last block (or reset if not valid)
         if (lastbuf->length >= Modes.trailing_samples) {
             memcpy(outbuf->data, lastbuf->data + lastbuf->length - Modes.trailing_samples, Modes.trailing_samples * sizeof(uint16_t));
+            memcpy(outbuf->iq_data, lastbuf->iq_data + lastbuf->length*2  - Modes.trailing_samples*2, Modes.trailing_samples * 2 * sizeof(unsigned char));
         } else {
             memset(outbuf->data, 0, Modes.trailing_samples * sizeof(uint16_t));
+            memset(outbuf->iq_data, 0, Modes.trailing_samples * 2 * sizeof(unsigned char));
         }
 
         // Get the system time for the start of this block
@@ -567,6 +580,9 @@ void readDataFromFile(void) {
 
         // Convert the new data
         convert_samples(readbuf, &outbuf->data[Modes.trailing_samples], slen, &outbuf->total_power);
+
+        // Copy IQ data.
+        memcpy(&outbuf->iq_data[Modes.trailing_samples*2], readbuf, slen*2);
 
         if (Modes.throttle) {
             // Wait until we are allowed to release this buffer to the main thread
@@ -690,6 +706,7 @@ void showHelp(void) {
 "--modeac                 Enable decoding of SSR Modes 3/A & 3/C\n"
 "--net-only               Enable just networking, no RTL device or file used\n"
 "--net-bind-address <ip>  IP address to bind to (default: Any; Use 127.0.0.1 for private)\n"
+"--enable-hptoa           Enable High Precision TimeStamping\n"
 #ifdef ENABLE_WEBSERVER
 "--net-http-port <ports>  HTTP server ports (default: 8080)\n"
 #endif
@@ -1007,6 +1024,8 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j],"--net-bind-address") && more) {
             free(Modes.net_bind_address);
             Modes.net_bind_address = strdup(argv[++j]);
+        } else if (!strcmp(argv[j],"--enable-hptoa")) {
+            Modes.hp_timestamp = 1;
         } else if (!strcmp(argv[j],"--net-http-port") && more) {
 #ifdef ENABLE_WEBSERVER
             free(Modes.net_http_ports);
