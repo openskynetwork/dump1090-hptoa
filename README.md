@@ -8,7 +8,7 @@ This is a fork of [Mutability's version](https://github.com/mutability/dump1090)
 This version is licensed under the GPL (v2 or later).
 See the file COPYING for details.
 
-This new version is based on the work named ['Nanosecond-precision Time-of-Arrival Estimation for Aircraft Signals with low-cost SDR Receivers'](https://arxiv.org/abs/1802.07016)
+This new version is based on the work named ['Nanosecond-precision Time-of-Arrival Estimation for Aircraft Signals with low-cost SDR Receivers'](http://eprints.networks.imdea.org/1768/)
 published in [ACM/IEEE IPSN 2018](http://ipsn.acm.org/2018/program.html) conference and made by 
 [Roberto Calvo-Palomino](http://people.networks.imdea.org/~roberto_calvo/),
  [Fabio Ricciato](https://scholar.google.it/citations?user=skJbNQQAAAAJ&hl=it&oi=ao), 
@@ -57,5 +57,5 @@ Since the high precision timestamp estimation requires FFT/IFFT computation in t
 
 
 ````
-sudo dump1090-opensky --enable-hptoa PeakPulse --interactive
+sudo dump1090 --enable-hptoa PeakPulse --interactive
 ````
