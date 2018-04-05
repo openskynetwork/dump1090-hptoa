@@ -50,8 +50,11 @@
 #include "dump1090.h"
 
 #include <rtl-sdr.h>
-
 #include <stdarg.h>
+
+
+#include "hp-toa/manager.h"
+
 
 static int verbose_device_search(char *s);
 
@@ -150,6 +153,7 @@ void modesInitConfig(void) {
     Modes.net_output_sbs_ports    = strdup("30003");
     Modes.net_input_beast_ports   = strdup("30004,30104");
     Modes.net_output_beast_ports  = strdup("30005");
+    Modes.hp_timestamp            = PEAK_PULSE;
 #ifdef ENABLE_WEBSERVER
     Modes.net_http_ports          = strdup("8080");
 #endif
@@ -661,6 +665,8 @@ void *readerThreadEntryPoint(void *arg) {
     return NULL;
 #endif
 }
+
+
 //
 // ============================== Snip mode =================================
 //
@@ -706,7 +712,7 @@ void showHelp(void) {
 "--modeac                 Enable decoding of SSR Modes 3/A & 3/C\n"
 "--net-only               Enable just networking, no RTL device or file used\n"
 "--net-bind-address <ip>  IP address to bind to (default: Any; Use 127.0.0.1 for private)\n"
-"--enable-hptoa           Enable High Precision TimeStamping\n"
+"--enable-hptoa <method>  Enable High Precision TimeStamping: PeakPulse (default), CorrPulse or None\n"
 #ifdef ENABLE_WEBSERVER
 "--net-http-port <ports>  HTTP server ports (default: 8080)\n"
 #endif
@@ -1024,8 +1030,21 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[j],"--net-bind-address") && more) {
             free(Modes.net_bind_address);
             Modes.net_bind_address = strdup(argv[++j]);
-        } else if (!strcmp(argv[j],"--enable-hptoa")) {
-            Modes.hp_timestamp = 1;
+        } else if (!strcmp(argv[j],"--enable-hptoa") && more) {
+            ++j;
+            if (!strcasecmp(argv[j], "PeakPulse")) {
+                Modes.hp_timestamp = PEAK_PULSE;
+            } else if (!strcasecmp(argv[j], "CorrPulse")) {
+                Modes.hp_timestamp = CORR_PULSE;
+            } else if (!strcasecmp(argv[j], "None")) {
+                Modes.hp_timestamp = NONE;
+            } else {
+                fprintf(stderr, "High precision timestamp '%s' not understood (supported values: PeakPulse, CorrPulse, None)\n",
+                        argv[j]);
+                exit(1);
+            }
+
+
         } else if (!strcmp(argv[j],"--net-http-port") && more) {
 #ifdef ENABLE_WEBSERVER
             free(Modes.net_http_ports);
@@ -1205,6 +1224,9 @@ int main(int argc, char **argv) {
     } else {
         int watchdogCounter = 10; // about 1 second
 
+        // Create hp-toa for sharing data between process_thread and hptoa_thread
+        init_hp_queue();
+
         // Create the thread that will read the data from the device.
         pthread_mutex_lock(&Modes.data_mutex);
         pthread_create(&Modes.reader_thread, NULL, readerThreadEntryPoint, NULL);
@@ -1279,10 +1301,18 @@ int main(int argc, char **argv) {
 
         pthread_mutex_unlock(&Modes.data_mutex);
 
+
+
         log_with_timestamp("Waiting for receive thread termination");
+
         pthread_join(Modes.reader_thread,NULL);     // Wait on reader thread exit
         pthread_cond_destroy(&Modes.data_cond);     // Thread cleanup - only after the reader thread is dead!
         pthread_mutex_destroy(&Modes.data_mutex);
+
+        log_with_timestamp("Waiting for processing messages");
+        sleep(2);
+        end_hp_queue();
+
     }
 
     // If --stats were given, print statistics

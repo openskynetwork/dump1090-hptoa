@@ -52,11 +52,11 @@
 
 // Default version number, if not overriden by the Makefile
 #ifndef MODES_DUMP1090_VERSION
-# define MODES_DUMP1090_VERSION     "v1.13-custom"
+# define MODES_DUMP1090_VERSION     "v1.14-opensky"
 #endif
 
 #ifndef MODES_DUMP1090_VARIANT
-# define MODES_DUMP1090_VARIANT     "dump1090-mutability"
+# define MODES_DUMP1090_VARIANT     "dump1090-hptoa"
 #endif
 
 // ============================= Include files ==========================
@@ -82,7 +82,9 @@
     #include "winstubs.h" //Put everything Windows specific in here
 #endif
 
+#ifndef NO_COMPAT
 #include "compat/compat.h"
+#endif
 
 // Avoid a dependency on rtl-sdr except where it's really needed.
 typedef struct rtlsdr_dev rtlsdr_dev_t;
@@ -249,6 +251,7 @@ typedef enum {
 #include "cpr.h"
 #include "icao_filter.h"
 #include "convert.h"
+#include "hp-toa/types.h"
 
 //======================== structure declarations =========================
 
@@ -267,6 +270,8 @@ struct mag_buf {
 struct {                             // Internal state
     pthread_t       reader_thread;
 
+    pthread_t       hptoa_thread;
+
     pthread_mutex_t data_mutex;      // Mutex to synchronize buffer access
     pthread_cond_t  data_cond;       // Conditional variable associated
 
@@ -280,6 +285,7 @@ struct {                             // Internal state
 
     int             fd;              // --ifile option file descriptor
     input_format_t  input_format;    // --iformat option
+
     uint16_t       *maglut;          // I/Q -> Magnitude lookup table
     uint16_t       *log10lut;        // Magnitude -> log10 lookup table
     int             exit;            // Exit from the main loop when true
@@ -323,7 +329,7 @@ struct {                             // Internal state
     int   debug;                     // Debugging mode
     int   net;                       // Enable networking
     int   net_only;                  // Enable just networking
-    int   hp_timestamp;             // Enable High Precision Timestamp.
+    high_precision_t   hp_timestamp; // Enable High Precision Timestamp.
     uint64_t net_heartbeat_interval; // TCP heartbeat interval (milliseconds)
     int   net_output_flush_size;     // Minimum Size of output data
     uint64_t net_output_flush_interval; // Maximum interval (in milliseconds) between outputwrites
@@ -385,12 +391,13 @@ struct {                             // Internal state
 // The struct we use to store information about a decoded message.
 struct modesMessage {
     // Generic fields
+    int           queue;
     unsigned char msg[MODES_LONG_MSG_BYTES];      // Binary message.
     unsigned char verbatim[MODES_LONG_MSG_BYTES]; // Binary message, as originally received before correction
-    int           msgbits;                        // Number of bits in message 
+    int           msgbits;                        // Number of bits in message
     int           msgtype;                        // Downlink format #
     uint32_t      crc;                            // Message CRC
-    int           correctedbits;                  // No. of bits corrected 
+    int           correctedbits;                  // No. of bits corrected
     uint32_t      addr;                           // Address Announced
     addrtype_t    addrtype;                       // address format / source
     uint64_t      timestampMsg;                   // Timestamp of the message (12MHz clock)
@@ -542,6 +549,21 @@ struct modesMessage {
         float baro;
         unsigned heading;
     } tss;
+};
+
+struct queueMessage {
+    struct modesMessage* modes_message;
+    unsigned char*      samples;
+    unsigned int        samples_len;
+    unsigned int        samples_front_margin;
+    unsigned int        samples_back_margin;
+    high_precision_t    enable_hptoa;
+    unsigned int        start_packet_sample;
+
+    int*                bits_decoded;
+    double              up_factor;
+
+
 };
 
 // This one needs modesMessage:

@@ -9,7 +9,7 @@
 // Free Software Foundation, either version 2 of the License, or (at your  
 // option) any later version.  
 //
-// This file is distributed in the hope that it will be useful, but  
+// This file is distributed in the hope that it will be useful, but
 // WITHOUT ANY WARRANTY; without even the implied warranty of  
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU  
 // General Public License for more details.
@@ -48,7 +48,8 @@
 //   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-#include "dump1090.h"
+#include "mode_s.h"
+//#include "dump1090.h"
 
 /* for PRIX64 */
 #include <inttypes.h>
@@ -1549,7 +1550,7 @@ void displayModesMessage(struct modesMessage *mm) {
             printf("This is a synthetic MLAT message.\n");
         else {
             printf("Time: %.2f us\n", mm->timestampMsg / 12.0);
-            if (Modes.hp_timestamp) {
+            if (Modes.hp_timestamp != NONE ) {
                 printf("HP-Time: %.4f ns\n", mm->hpTimestampMsg);
             }
         }

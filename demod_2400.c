@@ -18,7 +18,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "dump1090.h"
-#include "hp-toa/HP-TOA.h"
+#include "hp-toa/manager.h"
 
 // 2.4MHz sampling rate version
 //
@@ -359,42 +359,34 @@ void demodulate2400(struct mag_buf *mag)
                 Modes.stats_current.strong_signal_count++; // signal power above -3dBFS
         }
 
-        // Run HP-ToA method for TOA nanosecond precision
-        if (Modes.hp_timestamp) {
 
-            // Get bits decoded
-            int bits[mm.msgbits];
-            for (int i = 0; i < mm.msgbits; i++)
-                bits[i] = getbit(mm.msg, i + 1);
+        // Extract IQ samples from mag->iq_data with a margin specified
+        // by iq_from_margin and iq_back_margin
 
-            // Prepare the IQ samples of the packet
-            unsigned int b_packet, e_packet;
-            int iq_front_margin = 14;
-            int iq_back_margin = 20;
+        unsigned int begin_packet, end_packet, len_packet;
+        unsigned int iq_front_margin = 14;
+        unsigned int iq_back_margin = 512 - iq_front_margin;
 
-            b_packet = j * 2;
-            e_packet = (j + ((msglen+iq_back_margin) * 12 / 5)) * 2;
+        begin_packet = (j * 2);
+        end_packet = (j + iq_back_margin) * 2;
+        len_packet = end_packet - begin_packet;
 
+        // Generate and copy structure
+        struct queueMessage* ptr_message = malloc(sizeof(struct queueMessage));
+        ptr_message->modes_message = malloc(sizeof(struct modesMessage));
+        ptr_message->samples = malloc(sizeof(unsigned char*)*len_packet);
 
-            int packet_complex_len = iq_front_margin + ((e_packet - b_packet) / 2);
-            float complex packet_complex[packet_complex_len];
+        memcpy(ptr_message->samples,&mag->iq_data[begin_packet],sizeof(unsigned char*)*len_packet);
+        memcpy(ptr_message->modes_message,&mm,sizeof(struct modesMessage));
 
-            memset(&packet_complex,0,sizeof(float complex)*packet_complex_len);
+        ptr_message->enable_hptoa = Modes.hp_timestamp;
+        ptr_message->samples_len = len_packet;
+        ptr_message->samples_front_margin = iq_front_margin;
+        ptr_message->samples_back_margin = iq_back_margin;
+        ptr_message->start_packet_sample = (total_IQ - mlen + j - Modes.trailing_samples);
 
-            int index=0;
-
-            for (unsigned int p = b_packet; p < e_packet; p = p + 2) {
-                index = iq_front_margin+((p-b_packet)/2);
-                packet_complex[index] = CMPLX( (float)((mag->iq_data[p] - 127.4) / 128.0),
-                                               (float)((mag->iq_data[p+1] - 127.4) / 128.0));
-            }
-
-            unsigned int start_packet = (total_IQ - mlen + j - Modes.trailing_samples);
-
-            double toa = get_hp_toa(packet_complex, packet_complex_len, iq_front_margin, start_packet, UPSAMPLING_FACTOR, bits, mm.msgbits);
-
-            mm.hpTimestampMsg = toa;
-        }
+        // Push the message to next layer
+        push_message(ptr_message);
 
         // Skip over the message:
         // (we actually skip to 8 bits before the end of the message,
@@ -403,9 +395,10 @@ void demodulate2400(struct mag_buf *mag)
         //  few bits of the first message, but the message bits didn't
         //  overlap)
         j += msglen*12/5;
-            
+
         // Pass data to the next layer
-        useModesMessage(&mm);
+        //useModesMessage(&mm);
+
     }
 
     /* update noise power */

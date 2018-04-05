@@ -1,5 +1,5 @@
 /*
- * Copyright (C) OpenSky Network 2018
+ * Copyright (C) OpenSky Network 2018 / IMDEA Networks Institute
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,21 +18,19 @@
  *
  */
 
-#ifndef HP_TOA_H
-#define HP_TOA_H
+/*
+ *
+ * This code is based on the work named
+ * 'Nanosecond-precision Time-of-Arrival Estimation for Aircraft Signals with low-cost SDR Receivers'
+ * (http://eprints.networks.imdea.org/1768/) published in ACM/IPSN 2018 conference
+ * and made by:
+ * Roberto Calvo-Palomino, Fabio Ricciato, Blaz Repas, Domenico Giustiniano, Vincent Lenders.
+ *
+ */
 
-#include <complex.h>
-#include <math.h>
+#ifndef HIGH_PRECISION_TYPES_H
+#define HIGH_PRECISION_TYPES_H
 
-#include <liquid/liquid.h>
-
-#define  UPSAMPLING_FACTOR  20.0
-
-
-double get_hp_toa (float complex signal[], unsigned int signal_len, int signal_front_margin,
-                  unsigned int init_packet_sample,
-                  double up_factor,
-                  int bits_decoded[], unsigned int bits_len);
-
+typedef enum { NONE=0, PEAK_PULSE, CORR_PULSE} high_precision_t;
 
 #endif
