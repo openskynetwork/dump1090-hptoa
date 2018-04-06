@@ -49,7 +49,7 @@ This new version adds a new parameter to enable the high precision timestamp met
 
 * None: No high-precision timestamp computed,  fallback to the legacy timestamp of the mutability version.
 
-The detailed description of both methods can be found on the paper:  ['Nanosecond-precision Time-of-Arrival Estimation for Aircraft Signals with low-cost SDR Receivers'](https://arxiv.org/abs/1802.07016)
+The detailed description of both methods can be found on the paper:  ['Nanosecond-precision Time-of-Arrival Estimation for Aircraft Signals with low-cost SDR Receivers'](http://eprints.networks.imdea.org/1768/)
  
 ## Run as root
 

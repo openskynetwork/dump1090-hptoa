@@ -329,7 +329,8 @@ static void flushWrites(struct net_writer *writer) {
             int nwritten = send(c->fd, writer->data, writer->dataUsed, 0 );
 #endif
             if (nwritten != writer->dataUsed) {
-                modesCloseClient(c);
+		// commented to avoid randome crashes
+                //modesCloseClient(c);
             }
         }
     }
