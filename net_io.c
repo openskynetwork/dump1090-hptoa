@@ -383,6 +383,7 @@ static void modesSendBeastOutput(struct modesMessage *mm) {
     int sig;
     unsigned char *msg = (Modes.net_verbatim ? mm->verbatim : mm->msg);
 
+
     if (!p)
         return;
 
