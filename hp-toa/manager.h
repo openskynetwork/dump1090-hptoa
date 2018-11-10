@@ -1,5 +1,5 @@
 /*
- * Copyright (C) OpenSky Network 2018 / IMDEA Networks Institute
+ * Copyright (C) IMDEA Networks Institute
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
