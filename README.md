@@ -35,6 +35,20 @@ receivers. The best method achieves a standard deviation error of 1.5 ns.
 * Tested in extensively RaspberryPi-3 model B.
 * Compilation process integrated with cmake.
 
+# Building the project
+
+* Clone the repository
+```bash
+$ git clone https://github.com/openskynetwork/dump1090-hptoa
+```
+
+* Compile the project
+```bash
+$ cd dump1090-hptoa/
+$ mkdir build && cmake ../
+$ make
+```
+
 # How to run
 
 This new version adds a new parameter to enable the high precision timestamp method.
