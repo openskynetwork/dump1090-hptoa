@@ -4,7 +4,7 @@ PROJECT(dump1090)
 # allow more human readable "if then else" constructs
 #SET( CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS TRUE )
 
-SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -std=gnu++11")
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -std=gnu++11 -O3")
 LIST (APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
 execute_process(COMMAND "uname" OUTPUT_VARIABLE UNAME OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -26,7 +26,7 @@ dpkg_arch(ARCHITECTURE)
 MESSAGE("Architecture detected: ${ARCHITECTURE}")
 
 
-SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ggdb -Wall -std=c++11 -DMISSING_GETTIME -DMISSING_NANOSLEEP")
+SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ggdb -Wall -std=c++11 -O3 -DMISSING_GETTIME -DMISSING_NANOSLEEP")
 SET (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Werror -ggdb -D_GLIBCXX_DEBUG -D_GLIBCXX_DEBUG_PEDANTIC")
 
 #TODO: Check operative system to add clock_sleep functions (see old Makefile)
