@@ -45,7 +45,7 @@ $ git clone https://github.com/openskynetwork/dump1090-hptoa
 * Compile the project
 ```bash
 $ cd dump1090-hptoa/
-$ mkdir build && cmake ../
+$ mkdir build && cmake ./
 $ make
 ```
 
